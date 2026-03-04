@@ -66,7 +66,7 @@ ZFS Storage Layer
 (checksums, ARC cache, snapshots)
         │
         ▼
-Disk
+      Disk
 ```
 
 In this architecture:
