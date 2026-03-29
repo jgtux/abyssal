@@ -1,7 +1,6 @@
 # Abyssal
 
 Immutable, compressed dataset storage built on **ZFS** and **DwarFS**.
-Written in **Rust** for **FreeBSD**.
 
 Abyssal packages large directory trees into immutable dataset artifacts (such as `.dwarfs`) stored on ZFS pools, combining aggressive compression with strong integrity guarantees.
 
@@ -55,7 +54,7 @@ Abyssal separates the system into several logical layers.
 Application / Client
         │
         ▼
-Abyssal Manager (Rust)
+Abyssal Manager
         │
         ▼
 Filesystem Access Layer
