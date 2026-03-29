@@ -251,7 +251,7 @@ Current focus areas include:
 
 # License
 
-This project is licensed under the **GNU Affero General Public License v3 (AGPLv3)**.
+This project is licensed under the **BSD-3 Clause license**.
 
 See the `LICENSE` file for full details.
 
