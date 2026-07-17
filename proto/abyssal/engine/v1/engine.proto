@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package abyssal.engine.v1;
+
+// DwarfsEngine is the internal contract between the Elixir manager and the
+// Rust engine that links against libdwarfs-wr. It has no concept of a
+// dataset -- only raw .dwarfs files on disk and paths inside them. The
+// manager resolves name+version to an archive_path before calling here.
+//
+// Deliberately no OpenArchive/session RPCs: libdwarfs-wr's mount state is
+// process-global (mount_root_memfs/unmount_root_memfs), not a per-archive
+// handle, so ReadRange is stateless per call -- mount, read, unmount,
+// serialized behind an internal lock in the engine. Real multi-dataset
+// concurrency is future work.
+service DwarfsEngine {
+  rpc ReadRange(EngineReadRangeRequest) returns (EngineReadRangeResponse);
+}
+
+message EngineReadRangeRequest {
+  string archive_path = 1;
+  string entry_path = 2;
+  uint64 offset = 3;
+  uint64 length = 4;
+}
+
+message EngineReadRangeResponse {
+  bytes data = 1;
+  uint64 bytes_read = 2;
+  bool eof = 3;
+}

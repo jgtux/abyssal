@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package abyssal.v1;
+
+// AbyssalManager is the external, client-facing API: dataset publishing and
+// range reads. It knows about datasets (name + version); it does not know
+// how DwarfsEngine internally opens/mounts archives.
+service AbyssalManager {
+  rpc PublishDataset(PublishDatasetRequest) returns (PublishDatasetResponse);
+  rpc ReadRange(ReadRangeRequest) returns (ReadRangeResponse);
+}
+
+message PublishDatasetRequest {
+  string name = 1;
+  string version = 2;
+  // Local path to the source directory to package. Uploading a directory
+  // tree over the wire is on-demand-mode territory -- explicitly future.
+  string source_dir = 3;
+}
+
+message PublishDatasetResponse {
+  string archive_path = 1;
+  string archive_sha256 = 2;
+  uint32 entry_count = 3;
+  int64 created_at = 4;
+}
+
+message ReadRangeRequest {
+  string name = 1;
+  string version = 2;
+  // Path of the entry inside the archive, e.g. "hello.txt".
+  string entry_path = 3;
+  uint64 offset = 4;
+  uint64 length = 5;
+}
+
+message ReadRangeResponse {
+  bytes data = 1;
+  uint64 bytes_read = 2;
+  bool eof = 3;
+}

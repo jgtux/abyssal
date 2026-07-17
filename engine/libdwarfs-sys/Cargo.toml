@@ -1,0 +1,13 @@
+[package]
+name = "libdwarfs-sys"
+version = "0.1.0"
+edition = "2021"
+links = "dwarfs-wr"
+build = "build.rs"
+
+[build-dependencies]
+bindgen = "0.70"
+cc = "1"
+
+[dependencies]
+libc = "0.2"

@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package zfs_monitor;
+
+message StatsRequest {
+  int32 interval_seconds = 1;
+}
+
+message IO {
+  uint64 read_ops = 1;
+  uint64 write_ops = 2;
+  uint64 read_bytes = 3;
+  uint64 write_bytes = 4;
+}
+
+message Pool {
+  string name = 1;
+  uint64 size_bytes = 2;
+  uint64 allocated_bytes = 3;
+  uint64 free_bytes = 4;
+  uint32 capacity_percent = 5;
+  string health = 6;
+  string fragmentation = 7;
+  IO io_stats = 8;
+}
+
+message ARC {
+  uint64 size_bytes = 1;
+  uint64 target_size_bytes = 2;
+  uint64 max_size_bytes = 3;
+  double hit_rate_percent = 4;
+  double miss_rate_percent = 5;
+  uint64 hits = 6;
+  uint64 misses = 7;
+}
+
+message SystemInfo {
+  string hostname = 1;
+  string zfs_version = 2;
+  uint64 uptime_seconds = 3;
+}
+
+message StatsResponse {
+  repeated Pool pools = 1;
+  ARC arc = 2;
+  SystemInfo system = 3;
+  int64 timestamp = 4;
+  int64 collection_time_ms = 5;
+}
+
+service ZFSMonitor {
+  rpc GetStats(StatsRequest) returns (StatsResponse);
+  rpc StreamStats(StatsRequest) returns (stream StatsResponse);
+}

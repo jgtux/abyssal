@@ -1,0 +1,24 @@
+[package]
+name = "abyssal-engine"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = ["libdwarfs-sys"]
+
+[dependencies]
+libdwarfs-sys = { path = "libdwarfs-sys" }
+libc = "0.2"
+tonic = "0.12"
+prost = "0.13"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+memmap2 = "0.9"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[dev-dependencies]
+tempfile = "3"
+tokio-stream = { version = "0.1", features = ["net"] }

@@ -8,6 +8,37 @@ The system focuses on **reproducible datasets**, efficient storage usage, and pr
 
 ---
 
+# Getting Started
+
+Abyssal is two services plus a shared gRPC contract:
+
+- `manager/` — Elixir. Dataset lifecycle, the external API, ZFS monitoring
+  (extends [jgtux/grpc-zfs-monitor-demo](https://github.com/jgtux/grpc-zfs-monitor-demo)).
+- `engine/` — Rust. Links against [tamatebako/libdwarfs](https://github.com/tamatebako/libdwarfs)
+  (a C wrapper over [mhx/dwarfs](https://github.com/mhx/dwarfs)) to read DwarFS archives directly.
+- `proto/` — the gRPC contracts both sides generate code from.
+
+```sh
+# One-time: build libdwarfs-wr (native, multi-minute build)
+git submodule update --init
+engine/scripts/build-libdwarfs.sh
+
+# Terminal 1: the Rust engine
+cd engine && cargo run
+
+# Terminal 2: the Elixir manager
+cd manager && mix deps.get && mix run --no-halt
+
+# Terminal 3: the CLI, driving both over gRPC
+cd manager && mix escript.build && ./abyssal demo
+```
+
+`demo` publishes `testdata/hello/` as a dataset, reads a byte range back out
+of the resulting `.dwarfs` archive through the full stack, and compares it
+against the source file.
+
+---
+
 # Philosophy
 
 Abyssal is built around a few core principles.
@@ -239,7 +270,15 @@ Recommended operational practices include:
 
 Abyssal is currently in **early experimental development**.
 
-Current focus areas include:
+Working today: publish a directory as a dataset (via `mkdwarfs`) and read a
+byte range back out of it, end to end through the Elixir manager and Rust
+engine, over gRPC — see Getting Started above.
+
+Not yet built: real ZFS pool integration (the release store is a plain
+directory for now), the FUSE mounted-mode access path, compression
+profiles, dynamic compression policy, retention/replication.
+
+Current focus areas:
 
 - DwarFS + FUSE performance testing
 - compression strategy evaluation
