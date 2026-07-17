@@ -16,6 +16,16 @@ message PublishDatasetRequest {
   // Local path to the source directory to package. Uploading a directory
   // tree over the wire is on-demand-mode territory -- explicitly future.
   string source_dir = 3;
+  // Opt-in: encrypt the archive at rest with a freshly generated per-dataset
+  // key. Without this, publish behaves exactly as before.
+  bool encrypt = 4;
+  // Required iff encrypt=true: "phrase" | "split" | "both". Which recovery
+  // material to generate and return alongside the raw key.
+  string recovery = 5;
+  // Shamir k-of-n parameters, only used when recovery is "split"/"both".
+  // 0 = server default (currently 3-of-5).
+  uint32 shamir_threshold = 6;
+  uint32 shamir_shares = 7;
 }
 
 message PublishDatasetResponse {
@@ -23,6 +33,15 @@ message PublishDatasetResponse {
   string archive_sha256 = 2;
   uint32 entry_count = 3;
   int64 created_at = 4;
+  bool encrypted = 5;
+  // Key material below is generated fresh at publish time and never stored
+  // by the manager -- this response is the only place it's ever surfaced.
+  // Populated only when encrypted=true.
+  string raw_key_hex = 6;
+  string recovery_phrase = 7;
+  repeated string shares = 8;
+  uint32 shamir_threshold = 9;
+  uint32 shamir_total = 10;
 }
 
 message ReadRangeRequest {
@@ -32,6 +51,18 @@ message ReadRangeRequest {
   string entry_path = 3;
   uint64 offset = 4;
   uint64 length = 5;
+  // Required iff the target dataset is encrypted. Exactly one form of key
+  // material -- reconstruction to a raw key happens in the manager, never
+  // in the engine.
+  oneof key_material {
+    string raw_key_hex = 6;
+    string recovery_phrase = 7;
+    KeyShares shares = 8;
+  }
+}
+
+message KeyShares {
+  repeated string share = 1;
 }
 
 message ReadRangeResponse {

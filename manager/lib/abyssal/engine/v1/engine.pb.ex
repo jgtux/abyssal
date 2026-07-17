@@ -10,6 +10,7 @@ defmodule Abyssal.Engine.V1.EngineReadRangeRequest do
   field(:entry_path, 2, type: :string, json_name: "entryPath")
   field(:offset, 3, type: :uint64)
   field(:length, 4, type: :uint64)
+  field(:key, 5, type: :bytes)
 end
 
 defmodule Abyssal.Engine.V1.EngineReadRangeResponse do

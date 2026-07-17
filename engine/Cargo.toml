@@ -9,6 +9,9 @@ members = ["libdwarfs-sys"]
 [dependencies]
 libdwarfs-sys = { path = "libdwarfs-sys" }
 libc = "0.2"
+# Pure Rust (no cc/bindgen build step) -- deliberate, given how heavy the
+# libdwarfs-sys native build already is; see engine/src/crypto.rs.
+aes-gcm = "0.10"
 tonic = "0.12"
 prost = "0.13"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }

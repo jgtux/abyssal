@@ -1,5 +1,6 @@
 mod archive;
 mod config;
+mod crypto;
 mod service;
 
 use tonic::transport::Server;

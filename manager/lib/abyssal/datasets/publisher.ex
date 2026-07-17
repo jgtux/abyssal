@@ -6,28 +6,128 @@ defmodule Abyssal.Datasets.Publisher do
   shortcut: upstream dwarfs itself says the writer APIs are likely to
   change pre-1.0, while `mkdwarfs` the CLI is the stable, versioned
   interface -- see the discussion in the plan's Context section.
+
+  Optionally encrypts the built archive at rest (see `publish/4`).
   """
   require Logger
 
+  alias Abyssal.Crypto.{AesGcm, Mnemonic, Shamir}
   alias Abyssal.Datasets.{Manifest, ReleaseStore}
 
-  @spec publish(String.t(), String.t(), String.t()) ::
-          {:ok, Manifest.t()} | {:error, term()}
-  def publish(name, version, source_dir) do
-    with :ok <- ensure_source_dir(source_dir) do
+  @default_shamir_threshold 3
+  @default_shamir_shares 5
+
+  @type key_material :: %{
+          raw_key_hex: String.t(),
+          recovery_phrase: String.t() | nil,
+          shares: [String.t()] | nil,
+          shamir_threshold: pos_integer() | nil,
+          shamir_total: pos_integer() | nil
+        }
+
+  @doc """
+  Publishes `source_dir` as `name`/`version`.
+
+  With no opts, behaves exactly as before: builds the plaintext archive,
+  returns `{:ok, manifest}`.
+
+  Pass `encrypt: true, recovery: :phrase | :split | :both` (plus optional
+  `shamir_threshold:`/`shamir_shares:`, defaulting to #{@default_shamir_threshold}-of-#{@default_shamir_shares})
+  to encrypt the archive at rest with a freshly generated per-dataset key.
+  Returns the extra `key_material` element in that case -- the manager
+  never persists keys (see `Abyssal.Crypto.KeyMaterial`'s moduledoc), so
+  this return value is the *only* place that key material is ever
+  surfaced.
+  """
+  @spec publish(String.t(), String.t(), String.t(), keyword()) ::
+          {:ok, Manifest.t()} | {:ok, Manifest.t(), key_material()} | {:error, term()}
+  def publish(name, version, source_dir, opts \\ []) do
+    encrypt? = Keyword.get(opts, :encrypt, false)
+
+    with :ok <- ensure_source_dir(source_dir),
+         :ok <- validate_encrypt_opts(encrypt?, opts) do
       ReleaseStore.ensure_release_dir!(name, version)
       archive_path = ReleaseStore.archive_path(name, version)
 
       case run_mkdwarfs(source_dir, archive_path) do
-        :ok ->
-          manifest = build_manifest(name, version, source_dir, archive_path)
-          File.write!(ReleaseStore.manifest_path(name, version), Manifest.to_json(manifest))
-          {:ok, manifest}
-
-        {:error, _} = error ->
-          error
+        :ok -> finish_publish(name, version, source_dir, archive_path, encrypt?, opts)
+        {:error, _} = error -> error
       end
     end
+  end
+
+  defp validate_encrypt_opts(false, _opts), do: :ok
+
+  defp validate_encrypt_opts(true, opts) do
+    case Keyword.get(opts, :recovery) do
+      r when r in [:phrase, :split, :both] -> :ok
+      other -> {:error, {:invalid_recovery, other}}
+    end
+  end
+
+  defp finish_publish(name, version, source_dir, archive_path, false, _opts) do
+    manifest = build_manifest(name, version, source_dir, archive_path, %{})
+    write_manifest!(name, version, manifest)
+    {:ok, manifest}
+  end
+
+  defp finish_publish(name, version, source_dir, archive_path, true, opts) do
+    {crypto_fields, key_material} = encrypt_archive!(archive_path, opts)
+    manifest = build_manifest(name, version, source_dir, archive_path, crypto_fields)
+    write_manifest!(name, version, manifest)
+    {:ok, manifest, key_material}
+  end
+
+  defp write_manifest!(name, version, manifest) do
+    File.write!(ReleaseStore.manifest_path(name, version), Manifest.to_json(manifest))
+  end
+
+  # Encrypts the archive already written to `archive_path` (by
+  # run_mkdwarfs) in place, overwriting the plaintext with
+  # magic <> nonce <> ciphertext <> tag (see Abyssal.Crypto.AesGcm.wrap/2).
+  # Whole-file, not streaming: AES-GCM needs the entire message to produce
+  # one tag, and the engine's mount_root_memfs call takes one pointer+
+  # length upfront anyway -- acceptable at this project's current scale,
+  # same class of simplification as the engine's own whole-mmap mount.
+  defp encrypt_archive!(archive_path, opts) do
+    plaintext = File.read!(archive_path)
+    key = AesGcm.generate_key()
+    {nonce, ciphertext_with_tag} = AesGcm.encrypt(plaintext, key)
+    File.write!(archive_path, AesGcm.wrap(nonce, ciphertext_with_tag))
+
+    crypto_fields = %{
+      encrypted: true,
+      cipher: "aes-256-gcm",
+      nonce: Base.encode16(nonce, case: :lower)
+    }
+
+    {crypto_fields, build_key_material(key, opts)}
+  end
+
+  defp build_key_material(key, opts) do
+    recovery = Keyword.fetch!(opts, :recovery)
+    threshold = Keyword.get(opts, :shamir_threshold, @default_shamir_threshold)
+    total = Keyword.get(opts, :shamir_shares, @default_shamir_shares)
+
+    phrase =
+      if recovery in [:phrase, :both] do
+        {:ok, phrase} = Mnemonic.encode(key)
+        phrase
+      end
+
+    shares =
+      if recovery in [:split, :both] do
+        {:ok, shares} = Shamir.split(key, threshold, total)
+        shares
+      end
+
+    %{
+      raw_key_hex: Base.encode16(key, case: :lower),
+      recovery_phrase: phrase,
+      shares: shares,
+      shamir_threshold: if(shares, do: threshold),
+      shamir_total: if(shares, do: total)
+    }
   end
 
   defp ensure_source_dir(source_dir) do
@@ -51,7 +151,15 @@ defmodule Abyssal.Datasets.Publisher do
     end
   end
 
-  defp build_manifest(name, version, source_dir, archive_path) do
+  # crypto_fields is %{} for a plaintext publish, or %{encrypted:, cipher:,
+  # nonce:} for an encrypted one. sha256_file runs against whatever is
+  # physically on disk at archive_path at this point -- plaintext, or
+  # ciphertext when encrypt_archive!/2 has already overwritten it -- so
+  # archive_sha256 keeps its existing meaning ("hash of the file that
+  # crosses the OS-process boundary to the engine") in both cases, and
+  # additionally proves the encrypted-at-rest file wasn't corrupted
+  # without needing the key.
+  defp build_manifest(name, version, source_dir, archive_path, crypto_fields) do
     entries =
       source_dir
       |> list_files()
@@ -60,14 +168,17 @@ defmodule Abyssal.Datasets.Publisher do
         %{path: relative, size: File.stat!(path).size}
       end)
 
-    %Manifest{
-      name: name,
-      version: version,
-      created_at: DateTime.utc_now(),
-      archive_path: archive_path,
-      archive_sha256: sha256_file(archive_path),
-      entries: entries
-    }
+    Map.merge(
+      %Manifest{
+        name: name,
+        version: version,
+        created_at: DateTime.utc_now(),
+        archive_path: archive_path,
+        archive_sha256: sha256_file(archive_path),
+        entries: entries
+      },
+      crypto_fields
+    )
   end
 
   defp list_files(dir) do

@@ -35,7 +35,9 @@ cd manager && mix escript.build && ./abyssal demo
 
 `demo` publishes `testdata/hello/` as a dataset, reads a byte range back out
 of the resulting `.dwarfs` archive through the full stack, and compares it
-against the source file.
+against the source file. `demo --encrypt` runs the same check against an
+encrypted dataset, verifying the raw key, recovery phrase, and Shamir
+shares each independently decrypt correctly — see Encryption below.
 
 ---
 
@@ -130,6 +132,43 @@ Consumed through mount or API
 ```
 
 Artifacts are immutable once published.
+
+---
+
+# Encryption
+
+Dataset encryption is **opt-in** (`publish --encrypt`) and per-dataset: each
+publish generates its own random AES-256-GCM key, and the whole `.dwarfs`
+archive is encrypted at rest under that key.
+
+The manager never stores keys. At publish time it prints the raw key once —
+save it, or one of the recovery forms below, or the dataset becomes
+unreadable:
+
+- **Recovery phrase** — a 24-word BIP39-style mnemonic encoding the key
+  directly (no PBKDF2 stretching; this recovers one fixed key, not a wallet
+  seed tree).
+- **Key splitting** — Shamir's Secret Sharing, k-of-n threshold (default
+  3-of-5). Any `k` of the `n` shares reconstruct the key; fewer than `k`
+  reveal nothing about it.
+
+Recovery isn't a separate "disaster" code path — every `read-range` call
+supplies key material in one of three equivalent forms (`--key`,
+`--phrase`, or `--shares`), and the manager resolves whichever was given
+down to the raw key before asking the engine to decrypt. A wrong key, a
+mistyped phrase, and an insufficient set of shares are all caught the same
+way: the engine's AES-GCM authentication tag fails and the read is
+rejected.
+
+```sh
+./abyssal publish --name mydata --version v1 --source ./data \
+  --encrypt --recovery both --shamir-threshold 3 --shamir-shares 5
+
+./abyssal read-range --name mydata --version v1 --entry file.txt \
+  --offset 0 --length 100 --key <hex from publish>
+
+./abyssal recover-key --shares <share1> --shares <share2> --shares <share3>
+```
 
 ---
 
@@ -272,7 +311,9 @@ Abyssal is currently in **early experimental development**.
 
 Working today: publish a directory as a dataset (via `mkdwarfs`) and read a
 byte range back out of it, end to end through the Elixir manager and Rust
-engine, over gRPC — see Getting Started above.
+engine, over gRPC — see Getting Started above. Optional per-dataset
+encryption (AES-256-GCM) with recovery via a BIP39-style phrase and/or
+Shamir's Secret Sharing — see Encryption above.
 
 Not yet built: real ZFS pool integration (the release store is a plain
 directory for now), the FUSE mounted-mode access path, compression

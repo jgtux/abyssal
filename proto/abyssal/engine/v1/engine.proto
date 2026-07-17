@@ -21,6 +21,12 @@ message EngineReadRangeRequest {
   string entry_path = 2;
   uint64 offset = 3;
   uint64 length = 4;
+  // Raw 32-byte AES-256 key. Required iff archive_path's file is in
+  // Abyssal's self-describing encrypted-archive format (magic "ABY1" --
+  // see engine/src/crypto.rs); ignored/empty otherwise. Reconstructing a
+  // raw key from a recovery phrase or Shamir shares always happens in the
+  // manager -- the engine only ever sees raw key bytes.
+  bytes key = 5;
 }
 
 message EngineReadRangeResponse {

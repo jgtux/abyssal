@@ -1,6 +1,6 @@
 use tonic::{Request, Response, Status};
 
-use crate::archive;
+use crate::archive::{self, EngineError};
 
 pub mod proto {
     tonic::include_proto!("abyssal.engine.v1");
@@ -30,9 +30,15 @@ impl DwarfsEngine for DwarfsEngineService {
         let entry_path = req.entry_path;
         let offset = req.offset;
         let length = req.length;
+        let key = req.key;
 
         let result = tokio::task::spawn_blocking(move || {
-            archive::read_range(&archive_path, &entry_path, offset, length)
+            let key = if key.is_empty() {
+                None
+            } else {
+                Some(key.as_slice())
+            };
+            archive::read_range(&archive_path, &entry_path, offset, length, key)
         })
         .await
         .map_err(|e| Status::internal(format!("engine task panicked: {e}")))?;
@@ -43,6 +49,27 @@ impl DwarfsEngine for DwarfsEngineService {
                 data: r.data,
                 eof: r.eof,
             })),
+            // MissingKey/InvalidKey are the client's fault (didn't supply
+            // key material, or supplied a malformed one) -- invalid_argument.
+            // DecryptFailed is deliberately its own status (permission_denied):
+            // "wrong key" is a meaningfully different operator message than
+            // "you forgot to supply one", and AES-GCM can't tell us whether
+            // it was a wrong key or a tampered archive, so we don't
+            // over-claim either. CorruptArchive means the file is too short
+            // to even contain a valid header -- data_loss. Every other
+            // variant keeps its existing generic internal mapping.
+            Err(EngineError::MissingKey) => Err(Status::invalid_argument(
+                "archive is encrypted; key material required",
+            )),
+            Err(EngineError::InvalidKey) => {
+                Err(Status::invalid_argument("key must be exactly 32 bytes"))
+            }
+            Err(EngineError::DecryptFailed) => Err(Status::permission_denied(
+                "decryption failed: wrong key or corrupted archive",
+            )),
+            Err(EngineError::CorruptArchive) => {
+                Err(Status::data_loss("encrypted archive header is malformed"))
+            }
             Err(e) => Err(Status::internal(e.to_string())),
         }
     }

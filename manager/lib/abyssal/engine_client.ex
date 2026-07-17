@@ -9,9 +9,14 @@ defmodule Abyssal.EngineClient do
   """
   require Logger
 
-  @spec read_range(String.t(), String.t(), non_neg_integer(), non_neg_integer()) ::
-          {:ok, binary(), boolean()} | {:error, term()}
-  def read_range(archive_path, entry_path, offset, length) do
+  @spec read_range(
+          String.t(),
+          String.t(),
+          non_neg_integer(),
+          non_neg_integer(),
+          binary() | nil
+        ) :: {:ok, binary(), boolean()} | {:error, term()}
+  def read_range(archive_path, entry_path, offset, length, key \\ nil) do
     addr = engine_addr()
 
     with {:ok, channel} <- GRPC.Stub.connect(addr) do
@@ -19,7 +24,8 @@ defmodule Abyssal.EngineClient do
         archive_path: archive_path,
         entry_path: entry_path,
         offset: offset,
-        length: length
+        length: length,
+        key: key || <<>>
       }
 
       result =

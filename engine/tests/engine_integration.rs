@@ -12,6 +12,8 @@ use tonic::transport::Server;
 // the binary and this test.
 #[path = "../src/archive.rs"]
 mod archive;
+#[path = "../src/crypto.rs"]
+mod crypto;
 #[path = "../src/service.rs"]
 mod service;
 
@@ -75,6 +77,7 @@ async fn read_range_over_grpc_matches_source_bytes() {
             entry_path: "hello.txt".to_string(),
             offset: 0,
             length: 11,
+            key: vec![],
         })
         .await
         .expect("read_range RPC")

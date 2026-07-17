@@ -16,6 +16,8 @@ use std::sync::Mutex;
 
 use memmap2::Mmap;
 
+use crate::crypto;
+
 static MOUNT_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug)]
@@ -25,6 +27,10 @@ pub enum EngineError {
     Mount(i32),
     Open(i32),
     Read(i32),
+    MissingKey,
+    InvalidKey,
+    DecryptFailed,
+    CorruptArchive,
 }
 
 impl std::fmt::Display for EngineError {
@@ -35,6 +41,12 @@ impl std::fmt::Display for EngineError {
             EngineError::Mount(rc) => write!(f, "mount_root_memfs failed: {rc}"),
             EngineError::Open(rc) => write!(f, "tebako_open failed: {rc}"),
             EngineError::Read(rc) => write!(f, "tebako_pread failed: {rc}"),
+            EngineError::MissingKey => write!(f, "archive is encrypted; key material required"),
+            EngineError::InvalidKey => write!(f, "key must be exactly 32 bytes"),
+            EngineError::DecryptFailed => {
+                write!(f, "decryption failed: wrong key or corrupted archive")
+            }
+            EngineError::CorruptArchive => write!(f, "encrypted archive header is malformed"),
         }
     }
 }
@@ -50,11 +62,19 @@ pub struct RangeResult {
 /// bytes of `entry_path` starting at `offset`, and unmounts -- all before
 /// returning. Blocking; callers on an async runtime should run this via
 /// `spawn_blocking`.
+///
+/// `key` is required (else `EngineError::MissingKey`) iff the archive is
+/// in Abyssal's encrypted-archive format (magic-sniffed via
+/// `crypto::is_encrypted`, see crypto.rs); ignored otherwise. When
+/// present, the whole archive is decrypted into an owned buffer *before*
+/// `mount_root_memfs` ever sees it -- that call takes one pointer+length
+/// upfront, so there's no way to decrypt lazily/per-block.
 pub fn read_range(
     archive_path: &Path,
     entry_path: &str,
     offset: u64,
     length: u64,
+    key: Option<&[u8]>,
 ) -> Result<RangeResult, EngineError> {
     let _guard = MOUNT_LOCK.lock().expect("mount lock poisoned");
 
@@ -64,12 +84,33 @@ pub fn read_range(
     // only reads through the pointer we hand it in mount_root_memfs.
     let mmap = unsafe { Mmap::map(&file) }.map_err(EngineError::Io)?;
 
-    // SAFETY: mmap.as_ptr()/len() describe a valid, live mapping; the
-    // remaining args are optional tuning knobs (null = library defaults).
+    // If encrypted, decrypt into an owned buffer up front and mount that
+    // instead of the raw mmap. Both `mmap` and `decrypted` are ordinary
+    // local bindings that live until this function returns, i.e. through
+    // the whole mount/read/unmount sequence below -- same lifetime
+    // guarantee the plain mmap already relied on.
+    let decrypted: Option<Vec<u8>>;
+    let (ptr, len): (*const u8, usize) = if crypto::is_encrypted(&mmap) {
+        let key = key.ok_or(EngineError::MissingKey)?;
+        let buf = crypto::decrypt_archive(&mmap, key)?;
+        let ptr = buf.as_ptr();
+        let len = buf.len();
+        decrypted = Some(buf);
+        (ptr, len)
+    } else {
+        decrypted = None;
+        (mmap.as_ptr(), mmap.len())
+    };
+    let _decrypted = decrypted;
+
+    // SAFETY: ptr/len describe a valid, live mapping (either the mmap or
+    // the owned decrypted buffer above, both kept alive for this whole
+    // scope); the remaining args are optional tuning knobs (null =
+    // library defaults).
     let rc = unsafe {
         libdwarfs_sys::mount_root_memfs(
-            mmap.as_ptr() as *const _,
-            mmap.len() as u32,
+            ptr as *const _,
+            len as u32,
             std::ptr::null(),
             std::ptr::null(),
             std::ptr::null(),
@@ -182,7 +223,7 @@ mod tests {
         // testdata/hello/hello.txt is exactly "hello world" (11 bytes).
         // Read bytes [6, 11) -- "world" -- to prove range reads, not just
         // whole-file reads.
-        let result = read_range(&archive_path, "hello.txt", 6, 5).expect("read_range");
+        let result = read_range(&archive_path, "hello.txt", 6, 5, None).expect("read_range");
         assert_eq!(result.data, b"world");
         assert!(result.eof);
     }
@@ -193,7 +234,73 @@ mod tests {
             return;
         };
 
-        let result = read_range(&archive_path, "hello.txt", 0, 11).expect("read_range");
+        let result = read_range(&archive_path, "hello.txt", 0, 11, None).expect("read_range");
+        assert_eq!(result.data, b"hello world");
+        assert!(result.eof);
+    }
+
+    /// Builds an encrypted fixture directly with the `aes-gcm` crate --
+    /// independent of the (Elixir) writer, so this test doesn't depend on
+    /// Publisher having been implemented/working. See crypto.rs's own
+    /// tests for the format itself; this proves read_range's
+    /// encrypt-aware branch end to end against a real mounted archive.
+    fn encrypt_fixture(archive_path: &std::path::Path, key: &[u8; 32]) -> std::path::PathBuf {
+        use aes_gcm::aead::{Aead, KeyInit};
+        use aes_gcm::{Aes256Gcm, Key, Nonce};
+
+        let plaintext = std::fs::read(archive_path).expect("read plaintext fixture");
+        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+        let nonce_bytes = [42u8; 12];
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let ciphertext_with_tag = cipher
+            .encrypt(nonce, plaintext.as_slice())
+            .expect("encrypt");
+
+        let mut wrapped = Vec::new();
+        wrapped.extend_from_slice(crate::crypto::MAGIC);
+        wrapped.extend_from_slice(&nonce_bytes);
+        wrapped.extend_from_slice(&ciphertext_with_tag);
+
+        let encrypted_path = archive_path.with_extension("dwarfs.enc");
+        std::fs::write(&encrypted_path, wrapped).expect("write encrypted fixture");
+        encrypted_path
+    }
+
+    #[test]
+    fn read_range_requires_key_for_encrypted_archive() {
+        let Some((_dir, archive_path)) = build_fixture() else {
+            return;
+        };
+        let key = [7u8; 32];
+        let encrypted_path = encrypt_fixture(&archive_path, &key);
+
+        let result = read_range(&encrypted_path, "hello.txt", 0, 11, None);
+        assert!(matches!(result, Err(EngineError::MissingKey)));
+    }
+
+    #[test]
+    fn read_range_fails_with_wrong_key_for_encrypted_archive() {
+        let Some((_dir, archive_path)) = build_fixture() else {
+            return;
+        };
+        let key = [7u8; 32];
+        let wrong_key = [9u8; 32];
+        let encrypted_path = encrypt_fixture(&archive_path, &key);
+
+        let result = read_range(&encrypted_path, "hello.txt", 0, 11, Some(&wrong_key));
+        assert!(matches!(result, Err(EngineError::DecryptFailed)));
+    }
+
+    #[test]
+    fn read_range_succeeds_with_correct_key_for_encrypted_archive() {
+        let Some((_dir, archive_path)) = build_fixture() else {
+            return;
+        };
+        let key = [7u8; 32];
+        let encrypted_path = encrypt_fixture(&archive_path, &key);
+
+        let result =
+            read_range(&encrypted_path, "hello.txt", 0, 11, Some(&key)).expect("read_range");
         assert_eq!(result.data, b"hello world");
         assert!(result.eof);
     }

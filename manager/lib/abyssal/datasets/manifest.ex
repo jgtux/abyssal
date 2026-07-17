@@ -9,7 +9,17 @@ defmodule Abyssal.Datasets.Manifest do
   """
 
   @enforce_keys [:name, :version, :created_at, :archive_path, :archive_sha256, :entries]
-  defstruct [:name, :version, :created_at, :archive_path, :archive_sha256, entries: []]
+  defstruct [
+    :name,
+    :version,
+    :created_at,
+    :archive_path,
+    :archive_sha256,
+    entries: [],
+    encrypted: false,
+    cipher: nil,
+    nonce: nil
+  ]
 
   @type entry :: %{path: String.t(), size: non_neg_integer()}
   @type t :: %__MODULE__{
@@ -18,7 +28,15 @@ defmodule Abyssal.Datasets.Manifest do
           created_at: DateTime.t(),
           archive_path: String.t(),
           archive_sha256: String.t(),
-          entries: [entry()]
+          entries: [entry()],
+          encrypted: boolean(),
+          # "aes-256-gcm" when encrypted, else nil.
+          cipher: String.t() | nil,
+          # Hex-encoded 12-byte AES-GCM nonce, for operator visibility only --
+          # the engine always reads the real nonce back out of the archive
+          # file itself (see engine/src/crypto.rs), never from here. The key
+          # itself is never a manifest field: no persistent keystore.
+          nonce: String.t() | nil
         }
 
   @spec to_json(t()) :: String.t()
@@ -40,7 +58,12 @@ defmodule Abyssal.Datasets.Manifest do
          created_at: created_at,
          archive_path: decoded.archive_path,
          archive_sha256: decoded.archive_sha256,
-         entries: decoded.entries || []
+         entries: decoded.entries || [],
+         # Map.get with defaults: manifests written before this feature
+         # existed have none of these keys and must keep loading.
+         encrypted: Map.get(decoded, :encrypted, false),
+         cipher: Map.get(decoded, :cipher),
+         nonce: Map.get(decoded, :nonce)
        }}
     end
   end
