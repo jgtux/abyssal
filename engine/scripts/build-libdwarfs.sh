@@ -8,9 +8,28 @@
 # this script already produced.
 #
 # Prerequisites (Arch/Artix package names shown; adjust for your distro):
-#   pacman -S cmake gcc boost gflags google-glog libevent libarchive \
-#             xxhash openssl fmt double-conversion brotli lz4 zstd pkgconf \
-#             utf8cpp
+#   pacman -S cmake gcc boost boost-libs gflags google-glog libevent \
+#             libarchive xxhash openssl fmt double-conversion brotli lz4 \
+#             zstd pkgconf utf8cpp jemalloc
+#
+# jemalloc is easy to miss: dwarfs's own CMakeLists.txt requires it via
+# pkg-config (PkgConfig::JEMALLOC), but it's such a common transitive dep
+# of other things that it can already be present on a dev machine without
+# ever having been requested explicitly -- confirmed missing (and the
+# actual CMake Configure error) on a from-scratch Ubuntu 24.04 container
+# used to validate .github/workflows/ci.yml. Debian/Ubuntu equivalent:
+# libjemalloc-dev.
+#
+# Full verified Debian/Ubuntu (24.04) equivalent of the above, plus the
+# two extra pieces this script alone doesn't cover (CI needs them too):
+#   apt-get install cmake build-essential pkg-config libboost-all-dev \
+#     libgflags-dev libgoogle-glog-dev libevent-dev libarchive-dev \
+#     libxxhash-dev libssl-dev libfmt-dev libdouble-conversion-dev \
+#     libbrotli-dev liblz4-dev libzstd-dev libjemalloc-dev \
+#     libclang-dev protobuf-compiler
+#   (libclang-dev is for bindgen, protobuf-compiler is for tonic-build --
+#   both are Rust-side build.rs needs, not part of this script, but
+#   verified necessary in the same from-scratch Ubuntu container.)
 #
 # dwarfs's util.cpp does `#include <utf8.h>` (flat, no subdirectory) on
 # non-MSVC, but dwarfs's CMakeLists.txt never find_package()s utf8cpp or
@@ -19,6 +38,11 @@
 # under /usr/include/utf8cpp/utf8.h instead, so that assumption doesn't
 # hold here. Fixed below by adding utf8cpp's include dir via CPATH, which
 # GCC/Clang both honor as an implicit -isystem for every compile.
+#
+# Debian/Ubuntu has no utf8cpp/utfcpp package at all (confirmed: not in
+# 24.04's apt repos under either name) -- CI instead shallow-clones
+# github.com/nemtrif/utfcpp (header-only) and points CPATH at its
+# `source/` directory, same mechanism as the Arch case below.
 #
 # Verified working against libdwarfs-wr 0.11.0 + CMake 4.3.2: its vendored
 # double-conversion CMakeLists.txt predates CMake's removal of

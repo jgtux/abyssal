@@ -1,0 +1,176 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Debian/Ubuntu ships no utf8cpp/utfcpp package at all -- fetched as a
+  # header-only clone below and pointed at via CPATH, same mechanism
+  # engine/scripts/build-libdwarfs.sh already uses for Arch's differently
+  # laid out utf8cpp package. See that script's own comments for the
+  # full story (verified against this exact Ubuntu image).
+  CPATH: /tmp/utfcpp/source
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # libdwarfs-wr's own native superbuild dependencies, plus libclang
+      # (bindgen) and protobuf-compiler (tonic-build) for the Rust side.
+      # Verified against a from-scratch ubuntu:24.04 container before
+      # writing this workflow -- see engine/scripts/build-libdwarfs.sh's
+      # header comment for the full package list and why jemalloc in
+      # particular is easy to miss.
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake build-essential pkg-config git curl \
+            libboost-all-dev libgflags-dev libgoogle-glog-dev \
+            libevent-dev libarchive-dev libxxhash-dev libssl-dev \
+            libfmt-dev libdouble-conversion-dev libbrotli-dev \
+            liblz4-dev libzstd-dev libjemalloc-dev \
+            libclang-dev protobuf-compiler
+
+      - name: Fetch utfcpp headers
+        run: git clone --depth 1 https://github.com/nemtrif/utfcpp.git /tmp/utfcpp
+
+      - name: Get libdwarfs-wr submodule commit
+        id: libdwarfs-commit
+        run: echo "sha=$(git -C engine/vendor/libdwarfs-wr rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # The native superbuild is multi-minute (it fetches and compiles
+      # its own pinned dwarfs fork plus Folly, fbthrift, zstd, and more
+      # from source) -- cached and keyed on the submodule's pinned
+      # commit so it only re-runs when that pin actually changes.
+      - name: Cache libdwarfs-wr build
+        id: cache-libdwarfs
+        uses: actions/cache@v4
+        with:
+          path: |
+            engine/vendor/libdwarfs-wr/build
+            engine/vendor/libdwarfs-wr/deps
+          key: libdwarfs-wr-${{ runner.os }}-${{ steps.libdwarfs-commit.outputs.sha }}-v1
+
+      - name: Build libdwarfs-wr
+        if: steps.cache-libdwarfs.outputs.cache-hit != 'true'
+        run: ./engine/scripts/build-libdwarfs.sh
+
+      - name: Add mkdwarfs to PATH
+        run: echo "$GITHUB_WORKSPACE/engine/vendor/libdwarfs-wr/deps/bin" >> "$GITHUB_PATH"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust fmt check
+        working-directory: engine
+        run: cargo fmt --check
+
+      - name: Build and test Rust engine
+        working-directory: engine
+        run: |
+          cargo build --package abyssal-engine
+          cargo test --package abyssal-engine
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+          elixir-version: "1.17"
+
+      # .pb.ex files are committed, not regenerated here -- protoc-gen-
+      # elixir codegen is a manual dev-time step (mix protobuf.generate),
+      # not part of the compile/test path.
+      - name: Elixir deps
+        working-directory: manager
+        run: mix deps.get
+
+      - name: Elixir format check
+        working-directory: manager
+        run: mix format --check-formatted
+
+      - name: Elixir compile
+        working-directory: manager
+        run: mix compile --warnings-as-errors
+
+      - name: Elixir unit tests
+        working-directory: manager
+        run: mix test
+
+      - name: Elixir tests requiring mkdwarfs
+        working-directory: manager
+        run: mix test --include requires_mkdwarfs
+
+      # Both processes stay up for the rest of the job: the remaining
+      # Elixir tests need a real running engine, and the CLI demos need
+      # both a real running engine and a real running manager -- same
+      # two-process setup as local development (see README's Getting
+      # Started), just backgrounded instead of run in separate terminals.
+      - name: Start the Rust engine
+        working-directory: engine
+        run: |
+          nohup ./target/debug/abyssal-engine > /tmp/engine.log 2>&1 &
+          echo $! > /tmp/engine.pid
+          for _ in $(seq 1 30); do
+            grep -q "starting abyssal-engine" /tmp/engine.log && exit 0
+            sleep 1
+          done
+          echo "engine did not start in time" >&2
+          cat /tmp/engine.log
+          exit 1
+
+      - name: Elixir tests requiring the real engine
+        working-directory: manager
+        env:
+          ABYSSAL_ENGINE_ADDR: 127.0.0.1:50052
+        run: mix test --include requires_engine --include requires_mkdwarfs
+
+      - name: Build the CLI escript
+        working-directory: manager
+        run: mix escript.build
+
+      - name: Start the manager
+        working-directory: manager
+        env:
+          ABYSSAL_ENGINE_ADDR: 127.0.0.1:50052
+        run: |
+          nohup mix run --no-halt > /tmp/manager.log 2>&1 &
+          echo $! > /tmp/manager.pid
+          for _ in $(seq 1 30); do
+            grep -q "Stats cache started" /tmp/manager.log && exit 0
+            sleep 1
+          done
+          echo "manager did not start in time" >&2
+          cat /tmp/manager.log
+          exit 1
+
+      # The project's own acceptance gate: publish -> read-range ->
+      # byte-compare, over real gRPC, through the real engine. Once
+      # unencrypted, once encrypted (raw key + phrase + Shamir shares
+      # all independently verified) -- see manager/lib/abyssal/cli.ex.
+      - name: End-to-end demo (plain + encrypted)
+        working-directory: manager
+        run: |
+          ./abyssal demo
+          ./abyssal demo --encrypt
+
+      - name: Show engine/manager logs
+        if: always()
+        run: |
+          echo "::group::engine log"
+          cat /tmp/engine.log || true
+          echo "::endgroup::"
+          echo "::group::manager log"
+          cat /tmp/manager.log || true
+          echo "::endgroup::"
+
+      - name: Stop background processes
+        if: always()
+        run: |
+          kill "$(cat /tmp/engine.pid)" 2>/dev/null || true
+          kill "$(cat /tmp/manager.pid)" 2>/dev/null || true
