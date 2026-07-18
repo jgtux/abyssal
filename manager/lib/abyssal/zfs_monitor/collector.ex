@@ -33,17 +33,31 @@ defmodule Abyssal.ZfsMonitor.Collector do
       {:error, e}
   end
 
+  # System.cmd raises (ErlangError, :enoent) rather than returning an
+  # error tuple when the executable itself doesn't exist on PATH -- not
+  # just a nonzero exit, which the case below already handles fine.
+  # Unhandled, that crashes this Task, which is linked to (and so also
+  # crashes) the periodic Task.Supervised process Cache schedules this
+  # from, repeatedly, until OTP's supervisor restart-intensity limit
+  # trips and takes the whole application down with it -- confirmed by
+  # hitting exactly that on a CI runner with no zfs userspace tools
+  # installed at all (same failure class as the earlier hostname fix in
+  # get_hostname/0, different call site).
   defp collect_pools do
-    case System.cmd("zpool", ["list", "-Hp", "-o", "name,size,alloc,free,cap,frag,health"]) do
-      {output, 0} ->
-        output
-        |> String.split("\n", trim: true)
-        |> Enum.map(&parse_pool_line/1)
-        |> Enum.reject(&is_nil/1)
+    if System.find_executable("zpool") do
+      case System.cmd("zpool", ["list", "-Hp", "-o", "name,size,alloc,free,cap,frag,health"]) do
+        {output, 0} ->
+          output
+          |> String.split("\n", trim: true)
+          |> Enum.map(&parse_pool_line/1)
+          |> Enum.reject(&is_nil/1)
 
-      {error, code} ->
-        Logger.error("zpool list failed (#{code}): #{error}")
-        []
+        {error, code} ->
+          Logger.error("zpool list failed (#{code}): #{error}")
+          []
+      end
+    else
+      []
     end
   end
 
