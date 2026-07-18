@@ -39,12 +39,21 @@ fn find_prefix() -> PathBuf {
 /// ABYSSAL_LIBDWARFS_PREFIX pointing straight at a headers-in-prefix layout
 /// still works too.
 fn include_dir(prefix: &Path) -> Option<PathBuf> {
+    // Check both headers wrapper.h actually includes, not just
+    // tebako-io.h -- a directory with one but not the other (e.g. a
+    // partially-restored cache, or a stale/incomplete submodule
+    // checkout) should fall through to the next candidate rather than
+    // being accepted and failing confusingly deep inside bindgen's own
+    // clang diagnostic instead of this function's caller.
+    let has_required_headers =
+        |dir: &Path| dir.join("tebako-io.h").exists() && dir.join("tebako-config.h").exists();
+
     let direct = prefix.join("include");
-    if direct.join("tebako-io.h").exists() {
+    if has_required_headers(&direct) {
         return Some(direct);
     }
     let sibling = prefix.parent()?.join("include");
-    if sibling.join("tebako-io.h").exists() {
+    if has_required_headers(&sibling) {
         return Some(sibling);
     }
     None
