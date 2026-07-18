@@ -102,10 +102,6 @@ jobs:
         working-directory: manager
         run: mix test
 
-      - name: Elixir tests requiring mkdwarfs
-        working-directory: manager
-        run: mix test --include requires_mkdwarfs
-
       # Both processes stay up for the rest of the job: the remaining
       # Elixir tests need a real running engine, and the CLI demos need
       # both a real running engine and a real running manager -- same
@@ -124,7 +120,16 @@ jobs:
           cat /tmp/engine.log
           exit 1
 
-      - name: Elixir tests requiring the real engine
+      # Both --include flags together, in one invocation: a test tagged
+      # with both :requires_mkdwarfs and :requires_engine only actually
+      # runs if *both* are included at once -- ExUnit includes a
+      # multi-tagged test if *any* of its tags is explicitly included,
+      # so running these as two separate `mix test` calls (one before,
+      # one after the engine starts) would let the dual-tagged tests
+      # slip into the earlier call and fail for a bad reason (no engine
+      # yet). Confirmed by hitting exactly that failure on the first
+      # real CI run of this workflow.
+      - name: Elixir tests requiring mkdwarfs and/or the real engine
         working-directory: manager
         env:
           ABYSSAL_ENGINE_ADDR: 127.0.0.1:50052
