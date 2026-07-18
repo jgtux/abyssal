@@ -70,6 +70,9 @@ impl DwarfsEngine for DwarfsEngineService {
             Err(EngineError::CorruptArchive) => {
                 Err(Status::data_loss("encrypted archive header is malformed"))
             }
+            Err(EngineError::LengthTooLarge) => Err(Status::invalid_argument(
+                EngineError::LengthTooLarge.to_string(),
+            )),
             Err(e) => Err(Status::internal(e.to_string())),
         }
     }

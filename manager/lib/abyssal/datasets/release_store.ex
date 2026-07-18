@@ -20,7 +20,32 @@ defmodule Abyssal.Datasets.ReleaseStore do
     |> Path.expand()
   end
 
+  @doc """
+  True iff `segment` is safe to use as a single path component under
+  `root()`. Rejects anything that could escape the release root once the
+  OS resolves the path (empty, ".." anywhere, or a path separator) --
+  `Path.join`/`Path.expand` do NOT collapse ".." themselves, but every
+  actual filesystem call downstream (File.mkdir_p!, File.write!, the
+  archive_path handed to the Rust engine) resolves it via the kernel,
+  so an unvalidated name/version is a real path-traversal primitive, not
+  just a theoretical one. `name`/`version` reach here straight from the
+  gRPC request with no other validation, so this is the enforcement
+  point -- called from `release_dir/2` so every path built through this
+  module is covered, not just the ones the manager's gRPC handlers
+  happen to check.
+  """
+  @spec valid_segment?(String.t()) :: boolean()
+  def valid_segment?(segment) do
+    is_binary(segment) and segment != "" and
+      not String.contains?(segment, ["/", "\\", ".."])
+  end
+
   def release_dir(name, version) do
+    unless valid_segment?(name) and valid_segment?(version) do
+      raise ArgumentError,
+            "invalid dataset name/version: #{inspect(name)}/#{inspect(version)}"
+    end
+
     Path.join([root(), name, version])
   end
 

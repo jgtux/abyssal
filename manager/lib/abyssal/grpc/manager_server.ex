@@ -6,6 +6,13 @@ defmodule Abyssal.Grpc.ManagerServer do
   alias Abyssal.Datasets.{Publisher, ReleaseStore}
 
   def publish_dataset(request, _stream) do
+    case validate_name_version(request.name, request.version) do
+      :ok -> do_publish_dataset(request)
+      {:error, message} -> raise GRPC.RPCError, status: :invalid_argument, message: message
+    end
+  end
+
+  defp do_publish_dataset(request) do
     case Publisher.publish(
            request.name,
            request.version,
@@ -63,7 +70,8 @@ defmodule Abyssal.Grpc.ManagerServer do
   defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 
   def read_range(request, _stream) do
-    with {:ok, manifest} <- ReleaseStore.load_manifest(request.name, request.version),
+    with :ok <- validate_name_version(request.name, request.version),
+         {:ok, manifest} <- ReleaseStore.load_manifest(request.name, request.version),
          {:ok, key} <- resolve_key(manifest, request),
          {:ok, data, eof} <-
            Abyssal.EngineClient.read_range(
@@ -75,6 +83,9 @@ defmodule Abyssal.Grpc.ManagerServer do
            ) do
       %Abyssal.V1.ReadRangeResponse{data: data, bytes_read: byte_size(data), eof: eof}
     else
+      {:error, message} when is_binary(message) ->
+        raise GRPC.RPCError, status: :invalid_argument, message: message
+
       {:error, :enoent} ->
         raise GRPC.RPCError, status: :not_found, message: "dataset not found"
 
@@ -92,6 +103,23 @@ defmodule Abyssal.Grpc.ManagerServer do
       {:error, reason} ->
         Logger.error("ReadRange failed: #{inspect(reason)}")
         raise GRPC.RPCError, status: :internal, message: inspect(reason)
+    end
+  end
+
+  # name/version become filesystem path segments (ReleaseStore.release_dir/2)
+  # with zero other validation between the wire and disk -- reject a bad
+  # one here, at the trust boundary, for a clean invalid_argument instead
+  # of letting the ArgumentError ReleaseStore itself raises as a last
+  # resort surface as an opaque :internal error. Both are unauthenticated
+  # gRPC-facing fields, so this is real attack surface, not paranoia:
+  # confirmed a name/version containing ".." resolves outside release_root
+  # once the OS actually opens/creates the path, i.e. arbitrary file
+  # write via PublishDataset without this check.
+  defp validate_name_version(name, version) do
+    if ReleaseStore.valid_segment?(name) and ReleaseStore.valid_segment?(version) do
+      :ok
+    else
+      {:error, "invalid dataset name or version"}
     end
   end
 

@@ -20,6 +20,17 @@ use crate::crypto;
 
 static MOUNT_LOCK: Mutex<()> = Mutex::new(());
 
+// `length` comes straight from an unauthenticated gRPC request with no
+// other bound on it. `vec![0u8; length as usize]` below calls the global
+// allocator directly -- on allocation failure that's `handle_alloc_error`,
+// which *aborts the process*, not a catchable panic (so spawn_blocking's
+// panic-capturing in service.rs would NOT save it). A single request with
+// e.g. length = u64::MAX would take down the whole engine for every other
+// in-flight and future request. 64 MiB is a generous cap for a range-read
+// API -- large enough for any real chunked-read use, small enough to
+// never risk an allocation failure in the first place.
+const MAX_READ_LENGTH: u64 = 64 * 1024 * 1024;
+
 #[derive(Debug)]
 pub enum EngineError {
     Io(std::io::Error),
@@ -31,6 +42,7 @@ pub enum EngineError {
     InvalidKey,
     DecryptFailed,
     CorruptArchive,
+    LengthTooLarge,
 }
 
 impl std::fmt::Display for EngineError {
@@ -47,6 +59,12 @@ impl std::fmt::Display for EngineError {
                 write!(f, "decryption failed: wrong key or corrupted archive")
             }
             EngineError::CorruptArchive => write!(f, "encrypted archive header is malformed"),
+            EngineError::LengthTooLarge => {
+                write!(
+                    f,
+                    "length exceeds the maximum of {MAX_READ_LENGTH} bytes per read"
+                )
+            }
         }
     }
 }
@@ -76,6 +94,10 @@ pub fn read_range(
     length: u64,
     key: Option<&[u8]>,
 ) -> Result<RangeResult, EngineError> {
+    if length > MAX_READ_LENGTH {
+        return Err(EngineError::LengthTooLarge);
+    }
+
     let _guard = MOUNT_LOCK.lock().expect("mount lock poisoned");
 
     let file = std::fs::File::open(archive_path).map_err(EngineError::Io)?;
@@ -212,6 +234,23 @@ mod tests {
         assert!(status.success(), "mkdwarfs failed");
 
         Some((dir, archive_path))
+    }
+
+    #[test]
+    fn read_range_rejects_length_over_the_cap_without_touching_the_filesystem() {
+        // No fixture needed -- and deliberately not built, since the
+        // whole point is that an oversized length is rejected before any
+        // file I/O (an archive_path that doesn't exist would otherwise
+        // surface as EngineError::Io, masking whether the length check
+        // actually runs first).
+        let result = read_range(
+            Path::new("/nonexistent/does/not/matter.dwarfs"),
+            "hello.txt",
+            0,
+            MAX_READ_LENGTH + 1,
+            None,
+        );
+        assert!(matches!(result, Err(EngineError::LengthTooLarge)));
     }
 
     #[test]
