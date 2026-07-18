@@ -107,13 +107,19 @@ jobs:
       # both a real running engine and a real running manager -- same
       # two-process setup as local development (see README's Getting
       # Started), just backgrounded instead of run in separate terminals.
+      # Polls the actual TCP port rather than grepping for a log line --
+      # main.rs logs "starting abyssal-engine" *before* calling .serve(),
+      # so a log-line check can pass before the listener is actually
+      # accepting connections. Only worked by luck on timing until hit by
+      # the equivalent manager-side race below (both fixed the same way
+      # once the real cause was found on a real CI run).
       - name: Start the Rust engine
         working-directory: engine
         run: |
           nohup ./target/debug/abyssal-engine > /tmp/engine.log 2>&1 &
           echo $! > /tmp/engine.pid
           for _ in $(seq 1 30); do
-            grep -q "starting abyssal-engine" /tmp/engine.log && exit 0
+            (exec 3<>/dev/tcp/127.0.0.1/50052) 2>/dev/null && exit 0
             sleep 1
           done
           echo "engine did not start in time" >&2
@@ -139,6 +145,13 @@ jobs:
         working-directory: manager
         run: mix escript.build
 
+      # Same port-poll fix as the engine start step above: "Stats cache
+      # started" logs from a supervised child (Abyssal.ZfsMonitor.Cache)
+      # that starts before GRPC.Server.Supervisor's listener is actually
+      # bound (see Abyssal.Application's children order), so the demo
+      # CLI could connect before the port was really up -- this is what
+      # actually failed on the first real CI run (`demo failed:
+      # :no_addresses`).
       - name: Start the manager
         working-directory: manager
         env:
@@ -147,7 +160,7 @@ jobs:
           nohup mix run --no-halt > /tmp/manager.log 2>&1 &
           echo $! > /tmp/manager.pid
           for _ in $(seq 1 30); do
-            grep -q "Stats cache started" /tmp/manager.log && exit 0
+            (exec 3<>/dev/tcp/127.0.0.1/50051) 2>/dev/null && exit 0
             sleep 1
           done
           echo "manager did not start in time" >&2
