@@ -313,11 +313,13 @@ Working today: publish a directory as a dataset (via `mkdwarfs`) and read a
 byte range back out of it, end to end through the Elixir manager and Rust
 engine, over gRPC — see Getting Started above. Optional per-dataset
 encryption (AES-256-GCM) with recovery via a BIP39-style phrase and/or
-Shamir's Secret Sharing — see Encryption above.
+Shamir's Secret Sharing — see Encryption above. Compression profiles
+(Hot/Balanced/Archive) can be selected explicitly per publish, or left to
+the dynamic pool-capacity-based policy — see Compression Profiles and
+Dynamic Compression Behavior above.
 
 Not yet built: real ZFS pool integration (the release store is a plain
-directory for now), the FUSE mounted-mode access path, compression
-profiles, dynamic compression policy, retention/replication.
+directory for now), the FUSE mounted-mode access path, retention/replication.
 
 Current focus areas:
 

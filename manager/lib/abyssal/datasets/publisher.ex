@@ -12,12 +12,11 @@ defmodule Abyssal.Datasets.Publisher do
   require Logger
 
   alias Abyssal.Crypto.{AesGcm, Mnemonic, Shamir}
-  alias Abyssal.Datasets.{Manifest, ReleaseStore}
+  alias Abyssal.Datasets.{CompressionPolicy, Manifest, ReleaseStore}
 
   @default_shamir_threshold 3
   @default_shamir_shares 5
 
-  @default_compression_profile :balanced
   @compression_profiles [:hot, :balanced, :archive]
 
   @type key_material :: %{
@@ -42,10 +41,12 @@ defmodule Abyssal.Datasets.Publisher do
   this return value is the *only* place that key material is ever
   surfaced.
 
-  Pass `compression_profile: :hot | :balanced | :archive` (default
-  `#{inspect(@default_compression_profile)}`) to control the `mkdwarfs -l`
-  level used to build the archive -- see README.md's Compression Profiles
-  section.
+  Pass `compression_profile: :hot | :balanced | :archive` to control the
+  `mkdwarfs -l` level used to build the archive -- see README.md's
+  Compression Profiles section. If omitted, the profile is chosen
+  dynamically based on current ZFS pool capacity -- see
+  `Abyssal.Datasets.CompressionPolicy` and README.md's Dynamic
+  Compression Behavior section.
   """
   @spec publish(String.t(), String.t(), String.t(), keyword()) ::
           {:ok, Manifest.t()} | {:ok, Manifest.t(), key_material()} | {:error, term()}
@@ -86,9 +87,10 @@ defmodule Abyssal.Datasets.Publisher do
   end
 
   defp resolve_compression_profile(opts) do
-    case Keyword.get(opts, :compression_profile, @default_compression_profile) do
-      profile when profile in @compression_profiles -> {:ok, profile}
-      other -> {:error, {:invalid_compression_profile, other}}
+    case Keyword.fetch(opts, :compression_profile) do
+      :error -> {:ok, CompressionPolicy.resolve_dynamic_profile()}
+      {:ok, profile} when profile in @compression_profiles -> {:ok, profile}
+      {:ok, other} -> {:error, {:invalid_compression_profile, other}}
     end
   end
 

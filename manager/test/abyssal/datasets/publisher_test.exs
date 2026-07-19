@@ -89,14 +89,15 @@ defmodule Abyssal.Datasets.PublisherTest do
   end
 
   @tag :requires_mkdwarfs
-  test "publish defaults to the balanced compression profile" do
+  test "publish with no explicit profile defers to the dynamic compression policy" do
     source = Path.join(__DIR__, "../../../../testdata/hello") |> Path.expand()
+    expected = Abyssal.Datasets.CompressionPolicy.resolve_dynamic_profile() |> Atom.to_string()
 
     assert {:ok, manifest} = Publisher.publish("hello", "profile-default", source)
-    assert manifest.compression_profile == "balanced"
+    assert manifest.compression_profile == expected
 
     assert {:ok, reloaded} = ReleaseStore.load_manifest("hello", "profile-default")
-    assert reloaded.compression_profile == "balanced"
+    assert reloaded.compression_profile == expected
   end
 
   @tag :requires_mkdwarfs
