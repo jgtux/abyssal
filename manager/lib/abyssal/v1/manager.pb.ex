@@ -13,6 +13,7 @@ defmodule Abyssal.V1.PublishDatasetRequest do
   field(:recovery, 5, type: :string)
   field(:shamir_threshold, 6, type: :uint32, json_name: "shamirThreshold")
   field(:shamir_shares, 7, type: :uint32, json_name: "shamirShares")
+  field(:compression_profile, 8, type: :string, json_name: "compressionProfile")
 end
 
 defmodule Abyssal.V1.PublishDatasetResponse do
@@ -33,6 +34,7 @@ defmodule Abyssal.V1.PublishDatasetResponse do
   field(:shares, 8, repeated: true, type: :string)
   field(:shamir_threshold, 9, type: :uint32, json_name: "shamirThreshold")
   field(:shamir_total, 10, type: :uint32, json_name: "shamirTotal")
+  field(:compression_profile, 11, type: :string, json_name: "compressionProfile")
 end
 
 defmodule Abyssal.V1.ReadRangeRequest do

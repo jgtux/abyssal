@@ -2,10 +2,10 @@ defmodule Abyssal.Datasets.Manifest do
   @moduledoc """
   The manifest published alongside every `.dwarfs` archive under
   ReleaseStore. This is deliberately small for the skeleton milestone --
-  just enough to describe what got published and verify it later. Fields
-  like compression profile, retention policy, etc. are future additions
-  once those concepts actually exist (see README.md's Compression
-  Profiles / Dynamic Compression Behavior sections).
+  just enough to describe what got published and verify it later.
+  `compression_profile` records which of README.md's Compression Profiles
+  (Hot/Balanced/Archive) built the archive; retention policy etc. remain
+  future additions.
   """
 
   @enforce_keys [:name, :version, :created_at, :archive_path, :archive_sha256, :entries]
@@ -18,7 +18,8 @@ defmodule Abyssal.Datasets.Manifest do
     entries: [],
     encrypted: false,
     cipher: nil,
-    nonce: nil
+    nonce: nil,
+    compression_profile: "balanced"
   ]
 
   @type entry :: %{path: String.t(), size: non_neg_integer()}
@@ -36,7 +37,12 @@ defmodule Abyssal.Datasets.Manifest do
           # the engine always reads the real nonce back out of the archive
           # file itself (see engine/src/crypto.rs), never from here. The key
           # itself is never a manifest field: no persistent keystore.
-          nonce: String.t() | nil
+          nonce: String.t() | nil,
+          # "hot" | "balanced" | "archive" -- which mkdwarfs -l level built
+          # this archive. Stored as a plain string (not an atom) so JSON
+          # round-trips symmetrically through Jason's keys: :atoms decode
+          # in from_json/1.
+          compression_profile: String.t()
         }
 
   @spec to_json(t()) :: String.t()
@@ -63,7 +69,8 @@ defmodule Abyssal.Datasets.Manifest do
          # existed have none of these keys and must keep loading.
          encrypted: Map.get(decoded, :encrypted, false),
          cipher: Map.get(decoded, :cipher),
-         nonce: Map.get(decoded, :nonce)
+         nonce: Map.get(decoded, :nonce),
+         compression_profile: Map.get(decoded, :compression_profile, "balanced")
        }}
     end
   end

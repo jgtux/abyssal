@@ -7,7 +7,10 @@ defmodule Abyssal.Datasets.ReleaseStore do
   directory (no ZFS pool, no mounting). When real ZFS integration lands,
   this is the seam: `root/<name>/<version>/` becomes a ZFS dataset instead
   of a plain directory, and callers of this module shouldn't need to
-  change.
+  change. That's also where a dataset's compression profile (see
+  `Abyssal.Datasets.Publisher`) would apply its ZFS-side setting via
+  `zfs set compression=...`, once release_dir/2 creates a real ZFS
+  dataset instead of calling `File.mkdir_p!`.
   """
 
   @default_root "data/releases"

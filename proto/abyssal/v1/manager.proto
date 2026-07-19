@@ -26,6 +26,9 @@ message PublishDatasetRequest {
   // 0 = server default (currently 3-of-5).
   uint32 shamir_threshold = 6;
   uint32 shamir_shares = 7;
+  // "hot" | "balanced" | "archive" -- see README.md's Compression Profiles
+  // section. Empty = server default (currently "balanced").
+  string compression_profile = 8;
 }
 
 message PublishDatasetResponse {
@@ -42,6 +45,9 @@ message PublishDatasetResponse {
   repeated string shares = 8;
   uint32 shamir_threshold = 9;
   uint32 shamir_total = 10;
+  // The profile actually used to build this archive -- never empty, even
+  // if the request left compression_profile blank.
+  string compression_profile = 11;
 }
 
 message ReadRangeRequest {

@@ -9,6 +9,7 @@ defmodule Abyssal.CLI do
   then, from another shell:
 
       ./abyssal publish --name hello --version v1 --source ../testdata/hello
+      ./abyssal publish --name hello --version v1 --source ../testdata/hello --profile archive
       ./abyssal read-range --name hello --version v1 --entry hello.txt --offset 0 --length 11
       ./abyssal demo
 
@@ -41,14 +42,16 @@ defmodule Abyssal.CLI do
         encrypt: :boolean,
         recovery: :string,
         shamir_threshold: :integer,
-        shamir_shares: :integer
+        shamir_shares: :integer,
+        profile: :string
       )
 
     publish_opts = [
       encrypt: opts[:encrypt] || false,
       recovery: opts[:recovery] || "",
       shamir_threshold: opts[:shamir_threshold] || 0,
-      shamir_shares: opts[:shamir_shares] || 0
+      shamir_shares: opts[:shamir_shares] || 0,
+      compression_profile: opts[:profile] || ""
     ]
 
     case call_publish(opts[:name], opts[:version], opts[:source], publish_opts) do
@@ -261,7 +264,8 @@ defmodule Abyssal.CLI do
         encrypt: Keyword.get(opts, :encrypt, false),
         recovery: Keyword.get(opts, :recovery, ""),
         shamir_threshold: Keyword.get(opts, :shamir_threshold, 0),
-        shamir_shares: Keyword.get(opts, :shamir_shares, 0)
+        shamir_shares: Keyword.get(opts, :shamir_shares, 0),
+        compression_profile: Keyword.get(opts, :compression_profile, "")
       }
 
       result = Abyssal.V1.AbyssalManager.Stub.publish_dataset(channel, request)
@@ -321,6 +325,7 @@ defmodule Abyssal.CLI do
     usage: abyssal <publish|read-range|recover-key|demo> [options]
 
       publish      --name NAME --version VERSION --source SOURCE_DIR
+                   [--profile hot|balanced|archive]
                    [--encrypt --recovery phrase|split|both]
                    [--shamir-threshold N] [--shamir-shares N]
       read-range   --name NAME --version VERSION --entry ENTRY --offset N --length N

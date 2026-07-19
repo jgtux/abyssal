@@ -87,4 +87,37 @@ defmodule Abyssal.Datasets.PublisherTest do
                recovery: "nonsense"
              )
   end
+
+  @tag :requires_mkdwarfs
+  test "publish defaults to the balanced compression profile" do
+    source = Path.join(__DIR__, "../../../../testdata/hello") |> Path.expand()
+
+    assert {:ok, manifest} = Publisher.publish("hello", "profile-default", source)
+    assert manifest.compression_profile == "balanced"
+
+    assert {:ok, reloaded} = ReleaseStore.load_manifest("hello", "profile-default")
+    assert reloaded.compression_profile == "balanced"
+  end
+
+  @tag :requires_mkdwarfs
+  test "publish accepts each compression profile and records it in the manifest" do
+    source = Path.join(__DIR__, "../../../../testdata/hello") |> Path.expand()
+
+    for {profile, expected} <- [hot: "hot", balanced: "balanced", archive: "archive"] do
+      version = "profile-#{expected}"
+
+      assert {:ok, manifest} =
+               Publisher.publish("hello", version, source, compression_profile: profile)
+
+      assert manifest.compression_profile == expected
+      assert File.exists?(manifest.archive_path)
+    end
+  end
+
+  test "publish rejects an invalid compression profile" do
+    source = Path.join(__DIR__, "../../../../testdata/hello") |> Path.expand()
+
+    assert {:error, {:invalid_compression_profile, "nonsense"}} =
+             Publisher.publish("hello", "bad-profile", source, compression_profile: "nonsense")
+  end
 end

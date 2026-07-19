@@ -25,7 +25,8 @@ defmodule Abyssal.Grpc.ManagerServer do
           archive_sha256: manifest.archive_sha256,
           entry_count: length(manifest.entries),
           created_at: DateTime.to_unix(manifest.created_at),
-          encrypted: false
+          encrypted: false,
+          compression_profile: manifest.compression_profile
         }
 
       {:ok, manifest, key_material} ->
@@ -39,7 +40,8 @@ defmodule Abyssal.Grpc.ManagerServer do
           recovery_phrase: key_material.recovery_phrase || "",
           shares: key_material.shares || [],
           shamir_threshold: key_material.shamir_threshold || 0,
-          shamir_total: key_material.shamir_total || 0
+          shamir_total: key_material.shamir_total || 0,
+          compression_profile: manifest.compression_profile
         }
 
       {:error, reason} ->
@@ -48,10 +50,13 @@ defmodule Abyssal.Grpc.ManagerServer do
     end
   end
 
-  defp publish_opts(%{encrypt: false}), do: [encrypt: false]
+  defp publish_opts(%{encrypt: false} = request) do
+    [encrypt: false] ++ compression_profile_opt(request)
+  end
 
   defp publish_opts(%{encrypt: true} = request) do
-    [encrypt: true, recovery: parse_recovery(request.recovery)]
+    ([encrypt: true, recovery: parse_recovery(request.recovery)] ++
+       compression_profile_opt(request))
     |> maybe_put(:shamir_threshold, request.shamir_threshold)
     |> maybe_put(:shamir_shares, request.shamir_shares)
   end
@@ -63,6 +68,22 @@ defmodule Abyssal.Grpc.ManagerServer do
   # Publisher.publish/4's own validation rejects it with a clear
   # {:invalid_recovery, _} error rather than silently picking a default.
   defp parse_recovery(other), do: other
+
+  # "" means "not supplied" -- omit the opt entirely so Publisher's own
+  # default (:balanced) applies, same "absence means default" idiom as
+  # maybe_put/3 below uses for the Shamir integers.
+  defp compression_profile_opt(%{compression_profile: ""}), do: []
+
+  defp compression_profile_opt(%{compression_profile: profile}),
+    do: [compression_profile: parse_compression_profile(profile)]
+
+  defp parse_compression_profile("hot"), do: :hot
+  defp parse_compression_profile("balanced"), do: :balanced
+  defp parse_compression_profile("archive"), do: :archive
+  # Anything else passed through as-is so Publisher.publish/4's own
+  # validation rejects it with a clear {:invalid_compression_profile, _}
+  # error rather than silently picking a default.
+  defp parse_compression_profile(other), do: other
 
   # 0 means "use Publisher's default" (see PublishDatasetRequest's proto
   # comment) -- don't override it with an explicit 0.
