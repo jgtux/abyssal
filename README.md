@@ -172,6 +172,68 @@ rejected.
 
 ---
 
+# Post-Quantum Cryptography
+
+AES-256-GCM remains secure against quantum computers (Grover's algorithm reduces its effective security to 128 bits — still safe). The risk is **key distribution**: a quantum attacker who captures a dataset key today could decrypt the archive later. PQC hardens the key layer without touching the performant AES-GCM data path.
+
+## ML-KEM key wrapping
+
+When a key must leave the engine — shared with a collaborator, backed up to a remote vault, or stored in a manifest — wrap it under ML-KEM-768 instead of exposing the raw AES key.
+
+```sh
+./abyssal publish --name mydata --version v1 --source ./data \
+  --encrypt --kem-wrap --recovery both --shamir-threshold 3 --shamir-shares 5
+```
+
+The AES key is encrypted to an ephemeral ML-KEM public key. The ML-KEM secret key is split via Shamir's Secret Sharing (default 3-of-5). To read, a caller reconstructs the ML-KEM secret from shares, decapsulates the AES key, and decrypts as usual.
+
+```sh
+./abyssal read-range --name mydata --version v1 --entry file.txt \
+  --offset 0 --length 100 --kem-shares <s1> --kem-shares <s2> --kem-shares <s3>
+```
+
+## Hybrid mode (recommended during transition)
+
+Combine X25519 + ML-KEM-768 via HKDF so that breaking either primitive alone is insufficient:
+
+$$K_{\text{final}} = \text{HKDF-SHA-256}(K_{\text{X25519}} \parallel K_{\text{ML-KEM-768}} \parallel \text{context})$$
+
+Enable with `--hybrid-kem`.
+
+## ML-DSA manifest signatures
+
+Sign the dataset manifest at publish time to prove provenance and prevent manifest tampering.
+
+```sh
+./abyssal publish --name mydata --version v1 --source ./data \
+  --encrypt --sign --identity-key ~/.abyssal/id_ml-dsa-65
+```
+
+```sh
+./abyssal read-range --name mydata --version v1 --entry file.txt \
+  --verify --identity-key <publisher-pubkey> \
+  --kem-shares <s1> --kem-shares <s2> --kem-shares <s3>
+```
+
+ML-DSA-65 (NIST Level 3) produces ~3.3 KB signatures stored in the manifest, not per-block.
+
+## Recovery phrases
+
+PQC-aware recovery extends the existing BIP39 mnemonic to encode both the AES key and the ML-KEM secret key seed, or derives both deterministically from a single master seed via HKDF. One phrase still recovers everything.
+
+## Migration
+
+| Phase | Action |
+|-------|--------|
+| Now | Audit where AES keys are transmitted or stored outside the engine |
+| Next | Add `--kem-wrap` and `--hybrid-kem` options |
+| Later | Add `--sign` / `--verify` for manifest provenance |
+| Post-2030 | Make PQC wrapping the default |
+
+PQC fields in the manifest are optional — older clients ignore them and fall back to legacy key material.
+
+---
+
 # Compression Profiles
 
 Abyssal allows selecting compression strategies when publishing datasets.
