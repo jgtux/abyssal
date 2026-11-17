@@ -12,7 +12,7 @@ defmodule Abyssal.Datasets.Publisher do
   require Logger
 
   alias Abyssal.Crypto.{AesGcm, Mnemonic, Shamir}
-  alias Abyssal.Datasets.{CompressionPolicy, Manifest, ReleaseStore}
+  alias Abyssal.Datasets.{CompressionPolicy, Manifest, Mounts, ReleaseStore}
 
   @default_shamir_threshold 3
   @default_shamir_shares 5
@@ -97,6 +97,7 @@ defmodule Abyssal.Datasets.Publisher do
   defp finish_publish(name, version, source_dir, archive_path, compression_profile, false, _opts) do
     manifest = build_manifest(name, version, source_dir, archive_path, compression_profile, %{})
     write_manifest!(name, version, manifest)
+    mount_after_publish(manifest)
     {:ok, manifest}
   end
 
@@ -110,6 +111,24 @@ defmodule Abyssal.Datasets.Publisher do
     {:ok, manifest, key_material}
   end
 
+  # README's lifecycle ends at "consumed through mount or API", so a
+  # plaintext dataset is mounted as soon as it exists. A mount failure
+  # doesn't fail the publish -- the artifact is already durably on disk,
+  # and ReadRange mounts lazily on first use anyway. Encrypted datasets
+  # are never mounted here: that needs key material on purpose (see
+  # Abyssal.Datasets.Mounts).
+  defp mount_after_publish(manifest) do
+    case Mounts.ensure_mounted(manifest, nil) do
+      {:ok, _mountpoint} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "published #{manifest.name}@#{manifest.version} but mounting it failed: #{inspect(reason)}"
+        )
+    end
+  end
+
   defp write_manifest!(name, version, manifest) do
     File.write!(ReleaseStore.manifest_path(name, version), Manifest.to_json(manifest))
   end
@@ -118,9 +137,9 @@ defmodule Abyssal.Datasets.Publisher do
   # run_mkdwarfs) in place, overwriting the plaintext with
   # magic <> nonce <> ciphertext <> tag (see Abyssal.Crypto.AesGcm.wrap/2).
   # Whole-file, not streaming: AES-GCM needs the entire message to produce
-  # one tag, and the engine's mount_root_memfs call takes one pointer+
-  # length upfront anyway -- acceptable at this project's current scale,
-  # same class of simplification as the engine's own whole-mmap mount.
+  # one tag, OTP's :crypto has no streaming AEAD, and the dwarfs driver
+  # needs one complete plaintext image to mount anyway -- acceptable at
+  # this project's current scale (see Abyssal.Crypto.AesGcm's moduledoc).
   defp encrypt_archive!(archive_path, opts) do
     plaintext = File.read!(archive_path)
     key = AesGcm.generate_key()
@@ -211,10 +230,9 @@ defmodule Abyssal.Datasets.Publisher do
   # nonce:} for an encrypted one. sha256_file runs against whatever is
   # physically on disk at archive_path at this point -- plaintext, or
   # ciphertext when encrypt_archive!/2 has already overwritten it -- so
-  # archive_sha256 keeps its existing meaning ("hash of the file that
-  # crosses the OS-process boundary to the engine") in both cases, and
-  # additionally proves the encrypted-at-rest file wasn't corrupted
-  # without needing the key.
+  # archive_sha256 always means "hash of the file actually stored in the
+  # release store", and for an encrypted dataset additionally proves the
+  # encrypted-at-rest file wasn't corrupted without needing the key.
   defp build_manifest(name, version, source_dir, archive_path, compression_profile, crypto_fields) do
     entries =
       source_dir

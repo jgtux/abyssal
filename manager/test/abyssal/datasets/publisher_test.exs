@@ -3,20 +3,9 @@ defmodule Abyssal.Datasets.PublisherTest do
 
   alias Abyssal.Datasets.{Publisher, ReleaseStore}
 
-  setup do
-    tmp =
-      Path.join(System.tmp_dir!(), "abyssal_publisher_test_#{System.unique_integer([:positive])}")
+  import Abyssal.Test.IsolatedRoots
 
-    File.mkdir_p!(tmp)
-    Application.put_env(:abyssal, :release_root, tmp)
-
-    on_exit(fn ->
-      File.rm_rf!(tmp)
-      Application.delete_env(:abyssal, :release_root)
-    end)
-
-    :ok
-  end
+  setup :setup_isolated_roots
 
   @tag :requires_mkdwarfs
   test "publish builds an archive and a manifest describing the source dir" do

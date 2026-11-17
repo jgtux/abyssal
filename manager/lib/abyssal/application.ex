@@ -6,6 +6,9 @@ defmodule Abyssal.Application do
 
     children = [
       Abyssal.ZfsMonitor.Cache,
+      # Before the gRPC listener: ReadRange/MountDataset call into it, and
+      # it must have cleaned up any stale mounts before the first request.
+      Abyssal.Datasets.Mounts,
       {GRPC.Server.Supervisor,
        servers: [Abyssal.Grpc.ManagerServer, Abyssal.Grpc.ZfsMonitorServer],
        port: port,
