@@ -19,6 +19,9 @@ defmodule Abyssal.CLI do
         --key <hex from publish>
       ./abyssal recover-key --phrase "24 words..."
       ./abyssal demo --encrypt
+
+      ./abyssal mount --name hello --version v1 --key <hex from publish>
+      ./abyssal unmount --name hello --version v1
   """
 
   def main(args) do
@@ -27,6 +30,8 @@ defmodule Abyssal.CLI do
     case args do
       ["publish" | rest] -> publish(rest)
       ["read-range" | rest] -> read_range(rest)
+      ["mount" | rest] -> mount(rest)
+      ["unmount" | rest] -> unmount(rest)
       ["recover-key" | rest] -> recover_key(rest)
       ["demo" | rest] -> demo(rest)
       _ -> usage()
@@ -122,6 +127,39 @@ defmodule Abyssal.CLI do
     end
   end
 
+  defp mount(args) do
+    opts =
+      parse(args, name: :string, version: :string, key: :string, phrase: :string, shares: :keep)
+
+    case call_mount(opts[:name], opts[:version], key_material_from_opts(opts)) do
+      {:ok, resp} ->
+        IO.puts(resp.mountpoint)
+
+        if resp.encrypted,
+          do: IO.puts(:stderr, "(decrypted copy held in RAM until `abyssal unmount`)")
+
+        System.halt(0)
+
+      {:error, reason} ->
+        IO.puts(:stderr, "mount failed: #{inspect(reason)}")
+        System.halt(1)
+    end
+  end
+
+  defp unmount(args) do
+    opts = parse(args, name: :string, version: :string)
+
+    case call_unmount(opts[:name], opts[:version]) do
+      {:ok, _resp} ->
+        IO.puts(:stderr, "unmounted #{opts[:name]}@#{opts[:version]}")
+        System.halt(0)
+
+      {:error, reason} ->
+        IO.puts(:stderr, "unmount failed: #{inspect(reason)}")
+        System.halt(1)
+    end
+  end
+
   # --key / --phrase / --shares are mutually exclusive; whichever is
   # present wins, checked in that order.
   defp key_material_from_opts(opts) do
@@ -195,8 +233,7 @@ defmodule Abyssal.CLI do
     end
   end
 
-  # Exercises all three recovery forms independently against the real
-  # engine: raw key, recovery phrase, and a Shamir combine from just
+  # Exercises all three recovery forms independently end to end: raw key, recovery phrase, and a Shamir combine from just
   # `threshold` of the shares -- this is the feature's own acceptance
   # test, the same role plain `demo` already plays for the unencrypted
   # path. Uses a distinct version from demo_plain/2 so both can run
@@ -292,7 +329,28 @@ defmodule Abyssal.CLI do
     end
   end
 
-  # ReadRangeRequest's raw_key_hex/recovery_phrase/shares are a proto3
+  defp call_mount(name, version, key_material) do
+    with {:ok, channel} <- connect() do
+      request =
+        %Abyssal.V1.MountDatasetRequest{name: name, version: version}
+        |> apply_key_material(key_material)
+
+      result = Abyssal.V1.AbyssalManager.Stub.mount_dataset(channel, request)
+      GRPC.Stub.disconnect(channel)
+      result
+    end
+  end
+
+  defp call_unmount(name, version) do
+    with {:ok, channel} <- connect() do
+      request = %Abyssal.V1.UnmountDatasetRequest{name: name, version: version}
+      result = Abyssal.V1.AbyssalManager.Stub.unmount_dataset(channel, request)
+      GRPC.Stub.disconnect(channel)
+      result
+    end
+  end
+
+  # ReadRangeRequest's/MountDatasetRequest's raw_key_hex/recovery_phrase/shares are a proto3
   # `oneof`, which the protobuf lib collapses into a single struct field
   # (key_material) holding a tagged tuple -- not three separate flat
   # fields as the .proto source's field list might suggest at a glance.
@@ -322,7 +380,7 @@ defmodule Abyssal.CLI do
 
   defp usage do
     IO.puts(:stderr, """
-    usage: abyssal <publish|read-range|recover-key|demo> [options]
+    usage: abyssal <publish|read-range|mount|unmount|recover-key|demo> [options]
 
       publish      --name NAME --version VERSION --source SOURCE_DIR
                    [--profile hot|balanced|archive]
@@ -330,6 +388,9 @@ defmodule Abyssal.CLI do
                    [--shamir-threshold N] [--shamir-shares N]
       read-range   --name NAME --version VERSION --entry ENTRY --offset N --length N
                    [--key HEX | --phrase "words..." | --shares HEX --shares HEX ...]
+      mount        --name NAME --version VERSION
+                   [--key HEX | --phrase "words..." | --shares HEX --shares HEX ...]
+      unmount      --name NAME --version VERSION
       recover-key  --phrase "words..." | --shares HEX --shares HEX ...
       demo         [--encrypt]
     """)

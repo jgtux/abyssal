@@ -3,7 +3,7 @@ defmodule Abyssal.Grpc.ManagerServer do
   require Logger
 
   alias Abyssal.Crypto.KeyMaterial
-  alias Abyssal.Datasets.{Publisher, ReleaseStore}
+  alias Abyssal.Datasets.{Mounts, Publisher, Reader, ReleaseStore}
 
   def publish_dataset(request, _stream) do
     case validate_name_version(request.name, request.version) do
@@ -94,37 +94,97 @@ defmodule Abyssal.Grpc.ManagerServer do
     with :ok <- validate_name_version(request.name, request.version),
          {:ok, manifest} <- ReleaseStore.load_manifest(request.name, request.version),
          {:ok, key} <- resolve_key(manifest, request),
+         {:ok, mountpoint} <- Mounts.ensure_mounted(manifest, key),
          {:ok, data, eof} <-
-           Abyssal.EngineClient.read_range(
-             manifest.archive_path,
-             request.entry_path,
-             request.offset,
-             request.length,
-             key
-           ) do
+           Reader.read_range(mountpoint, request.entry_path, request.offset, request.length) do
       %Abyssal.V1.ReadRangeResponse{data: data, bytes_read: byte_size(data), eof: eof}
     else
-      {:error, message} when is_binary(message) ->
-        raise GRPC.RPCError, status: :invalid_argument, message: message
-
-      {:error, :enoent} ->
-        raise GRPC.RPCError, status: :not_found, message: "dataset not found"
-
-      {:error, :key_required} ->
-        raise GRPC.RPCError,
-          status: :invalid_argument,
-          message: "dataset is encrypted; supply raw_key_hex, recovery_phrase, or shares"
-
-      # The engine's own decrypt-failure statuses (permission_denied,
-      # data_loss, invalid_argument -- see engine/src/service.rs) pass
-      # through unchanged rather than getting flattened to :internal.
-      {:error, %GRPC.RPCError{} = error} ->
-        raise error
-
-      {:error, reason} ->
-        Logger.error("ReadRange failed: #{inspect(reason)}")
-        raise GRPC.RPCError, status: :internal, message: inspect(reason)
+      error -> raise_rpc_error("ReadRange", error)
     end
+  end
+
+  def mount_dataset(request, _stream) do
+    with :ok <- validate_name_version(request.name, request.version),
+         {:ok, manifest} <- ReleaseStore.load_manifest(request.name, request.version),
+         {:ok, key} <- resolve_key(manifest, request),
+         {:ok, mountpoint} <- Mounts.ensure_mounted(manifest, key) do
+      %Abyssal.V1.MountDatasetResponse{mountpoint: mountpoint, encrypted: manifest.encrypted}
+    else
+      error -> raise_rpc_error("MountDataset", error)
+    end
+  end
+
+  def unmount_dataset(request, _stream) do
+    with :ok <- validate_name_version(request.name, request.version),
+         :ok <- Mounts.unmount(request.name, request.version) do
+      %Abyssal.V1.UnmountDatasetResponse{}
+    else
+      error -> raise_rpc_error("UnmountDataset", error)
+    end
+  end
+
+  # One mapping for every dataset-access RPC, so a given failure means the
+  # same status everywhere. DecryptFailed is deliberately its own status
+  # (permission_denied): "wrong key" is a meaningfully different operator
+  # message than "you forgot to supply one", and AES-GCM can't tell a wrong
+  # key from a tampered archive, so the message doesn't over-claim either.
+  # CorruptArchive means the file can't even hold a valid header.
+  defp raise_rpc_error(rpc, error) do
+    {status, message} =
+      case error do
+        {:error, message} when is_binary(message) ->
+          {:invalid_argument, message}
+
+        {:error, :key_required} ->
+          {:invalid_argument,
+           "dataset is encrypted; supply raw_key_hex, recovery_phrase, or shares"}
+
+        {:error, reason} when reason in [:invalid_key, :invalid_key_length, :invalid_hex] ->
+          {:invalid_argument, "key must be exactly 32 bytes of hex"}
+
+        # Malformed recovery material (Mnemonic.decode/1, Shamir.combine/1)
+        # is the caller's input, not a server fault.
+        {:error, reason}
+        when reason in [
+               :invalid_word_count,
+               :unknown_word,
+               :bad_checksum,
+               :too_few_shares,
+               :duplicate_share_index
+             ] ->
+          {:invalid_argument, "invalid key material: #{reason}"}
+
+        {:error, {:corrupt_share, idx}} ->
+          {:invalid_argument, "invalid key material: share #{idx} is corrupt"}
+
+        {:error, :invalid_entry_path} ->
+          {:invalid_argument, "entry_path must be a relative path inside the dataset"}
+
+        {:error, :length_too_large} ->
+          {:invalid_argument,
+           "length exceeds the maximum of #{Reader.max_read_length()} bytes per read"}
+
+        {:error, :decrypt_failed} ->
+          {:permission_denied, "decryption failed: wrong key or corrupted archive"}
+
+        {:error, :corrupt_archive} ->
+          {:data_loss, "encrypted archive header is malformed"}
+
+        {:error, :enoent} ->
+          {:not_found, "dataset or entry not found"}
+
+        {:error, :eisdir} ->
+          {:invalid_argument, "entry_path is a directory"}
+
+        {:error, :not_mounted} ->
+          {:failed_precondition, "dataset is not mounted"}
+
+        other ->
+          Logger.error("#{rpc} failed: #{inspect(other)}")
+          {:internal, inspect(other)}
+      end
+
+    raise GRPC.RPCError, status: status, message: message
   end
 
   # name/version become filesystem path segments (ReleaseStore.release_dir/2)
@@ -144,9 +204,8 @@ defmodule Abyssal.Grpc.ManagerServer do
     end
   end
 
-  # Key resolution happens here, before ever calling the engine -- an
-  # encrypted dataset with no key material supplied at all is
-  # unambiguously incomplete, no need to spend an RPC round trip on it.
+  # An encrypted dataset with no key material supplied at all is
+  # unambiguously incomplete -- rejected before touching Mounts.
   defp resolve_key(%{encrypted: false}, _request), do: {:ok, nil}
 
   defp resolve_key(%{encrypted: true}, request) do
@@ -156,7 +215,7 @@ defmodule Abyssal.Grpc.ManagerServer do
     end
   end
 
-  # ReadRangeRequest's raw_key_hex/recovery_phrase/shares are a proto3
+  # ReadRangeRequest's and MountDatasetRequest's raw_key_hex/recovery_phrase/shares are a proto3
   # `oneof`, which the protobuf lib collapses into a single struct field
   # (key_material) holding a tagged tuple -- not three separate flat
   # fields as the .proto source's field list might suggest at a glance

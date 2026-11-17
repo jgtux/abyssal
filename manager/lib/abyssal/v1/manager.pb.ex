@@ -81,6 +81,56 @@ defmodule Abyssal.V1.ReadRangeResponse do
   field(:eof, 3, type: :bool)
 end
 
+defmodule Abyssal.V1.MountDatasetRequest do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "abyssal.v1.MountDatasetRequest",
+    protoc_gen_elixir_version: "0.17.0",
+    syntax: :proto3
+
+  oneof(:key_material, 0)
+
+  field(:name, 1, type: :string)
+  field(:version, 2, type: :string)
+  field(:raw_key_hex, 3, type: :string, json_name: "rawKeyHex", oneof: 0)
+  field(:recovery_phrase, 4, type: :string, json_name: "recoveryPhrase", oneof: 0)
+  field(:shares, 5, type: Abyssal.V1.KeyShares, oneof: 0)
+end
+
+defmodule Abyssal.V1.MountDatasetResponse do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "abyssal.v1.MountDatasetResponse",
+    protoc_gen_elixir_version: "0.17.0",
+    syntax: :proto3
+
+  field(:mountpoint, 1, type: :string)
+  field(:encrypted, 2, type: :bool)
+end
+
+defmodule Abyssal.V1.UnmountDatasetRequest do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "abyssal.v1.UnmountDatasetRequest",
+    protoc_gen_elixir_version: "0.17.0",
+    syntax: :proto3
+
+  field(:name, 1, type: :string)
+  field(:version, 2, type: :string)
+end
+
+defmodule Abyssal.V1.UnmountDatasetResponse do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "abyssal.v1.UnmountDatasetResponse",
+    protoc_gen_elixir_version: "0.17.0",
+    syntax: :proto3
+end
+
 defmodule Abyssal.V1.AbyssalManager.Service do
   @moduledoc false
 
@@ -89,6 +139,10 @@ defmodule Abyssal.V1.AbyssalManager.Service do
   rpc(:PublishDataset, Abyssal.V1.PublishDatasetRequest, Abyssal.V1.PublishDatasetResponse)
 
   rpc(:ReadRange, Abyssal.V1.ReadRangeRequest, Abyssal.V1.ReadRangeResponse)
+
+  rpc(:MountDataset, Abyssal.V1.MountDatasetRequest, Abyssal.V1.MountDatasetResponse)
+
+  rpc(:UnmountDataset, Abyssal.V1.UnmountDatasetRequest, Abyssal.V1.UnmountDatasetResponse)
 end
 
 defmodule Abyssal.V1.AbyssalManager.Stub do

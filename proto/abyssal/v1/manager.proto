@@ -2,12 +2,16 @@ syntax = "proto3";
 
 package abyssal.v1;
 
-// AbyssalManager is the external, client-facing API: dataset publishing and
-// range reads. It knows about datasets (name + version); it does not know
-// how DwarfsEngine internally opens/mounts archives.
+// AbyssalManager is the external, client-facing API: dataset publishing,
+// mounting (README's Mounted mode, via the dwarfs FUSE driver), and range
+// reads served from those mounts.
 service AbyssalManager {
   rpc PublishDataset(PublishDatasetRequest) returns (PublishDatasetResponse);
   rpc ReadRange(ReadRangeRequest) returns (ReadRangeResponse);
+  // Plaintext datasets are mounted automatically; this is mainly for
+  // encrypted ones, which are only ever mounted with key material.
+  rpc MountDataset(MountDatasetRequest) returns (MountDatasetResponse);
+  rpc UnmountDataset(UnmountDatasetRequest) returns (UnmountDatasetResponse);
 }
 
 message PublishDatasetRequest {
@@ -57,9 +61,9 @@ message ReadRangeRequest {
   string entry_path = 3;
   uint64 offset = 4;
   uint64 length = 5;
-  // Required iff the target dataset is encrypted. Exactly one form of key
-  // material -- reconstruction to a raw key happens in the manager, never
-  // in the engine.
+  // Required iff the target dataset is encrypted -- on every read, even
+  // while it's mounted. Exactly one form of key material; the manager
+  // resolves it to the raw key.
   oneof key_material {
     string raw_key_hex = 6;
     string recovery_phrase = 7;
@@ -76,3 +80,29 @@ message ReadRangeResponse {
   uint64 bytes_read = 2;
   bool eof = 3;
 }
+
+message MountDatasetRequest {
+  string name = 1;
+  string version = 2;
+  // Required iff the dataset is encrypted; same forms as ReadRangeRequest.
+  // Mounting decrypts the archive into the manager's decrypt_root (tmpfs by
+  // default) for as long as it stays mounted -- while mounted, anything
+  // allowed into the mountpoint can read it.
+  oneof key_material {
+    string raw_key_hex = 3;
+    string recovery_phrase = 4;
+    KeyShares shares = 5;
+  }
+}
+
+message MountDatasetResponse {
+  string mountpoint = 1;
+  bool encrypted = 2;
+}
+
+message UnmountDatasetRequest {
+  string name = 1;
+  string version = 2;
+}
+
+message UnmountDatasetResponse {}
