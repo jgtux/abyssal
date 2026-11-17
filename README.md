@@ -10,32 +10,30 @@ The system focuses on **reproducible datasets**, efficient storage usage, and pr
 
 # Getting Started
 
-Abyssal is two services plus a shared gRPC contract:
+Abyssal is a single Elixir service (`manager/`) plus its gRPC contract
+(`proto/`). It owns the dataset lifecycle, the external API, DwarFS FUSE
+mounts, and ZFS monitoring (extends
+[jgtux/grpc-zfs-monitor-demo](https://github.com/jgtux/grpc-zfs-monitor-demo)).
+DwarFS itself is used through its stable CLIs — `mkdwarfs` to build
+archives, the `dwarfs` FUSE driver to mount them — not a native binding.
 
-- `manager/` — Elixir. Dataset lifecycle, the external API, ZFS monitoring
-  (extends [jgtux/grpc-zfs-monitor-demo](https://github.com/jgtux/grpc-zfs-monitor-demo)).
-- `engine/` — Rust. Links against [tamatebako/libdwarfs](https://github.com/tamatebako/libdwarfs)
-  (a C wrapper over [mhx/dwarfs](https://github.com/mhx/dwarfs)) to read DwarFS archives directly.
-- `proto/` — the gRPC contracts both sides generate code from.
+Requirements: Elixir ≥ 1.17, [DwarFS](https://github.com/mhx/dwarfs)
+(`mkdwarfs`, `dwarfs`; distro package or an upstream static release — CI
+pins one), and `fuse3`.
 
 ```sh
-# One-time: build libdwarfs-wr (native, multi-minute build)
-git submodule update --init
-engine/scripts/build-libdwarfs.sh
+# Terminal 1: the manager. Mounts go under ABYSSAL_MOUNT_ROOT
+# (default /mnt/abyssal, which must be writable by this user).
+cd manager && mix deps.get
+ABYSSAL_MOUNT_ROOT=/tmp/abyssal-mnt mix run --no-halt
 
-# Terminal 1: the Rust engine
-cd engine && cargo run
-
-# Terminal 2: the Elixir manager
-cd manager && mix deps.get && mix run --no-halt
-
-# Terminal 3: the CLI, driving both over gRPC
+# Terminal 2: the CLI, driving the manager over gRPC
 cd manager && mix escript.build && ./abyssal demo
 ```
 
-`demo` publishes `testdata/hello/` as a dataset, reads a byte range back out
-of the resulting `.dwarfs` archive through the full stack, and compares it
-against the source file. `demo --encrypt` runs the same check against an
+`demo` publishes `testdata/hello/` as a dataset (which mounts it), reads a
+byte range back out through the API, and compares it against the source
+file. `demo --encrypt` runs the same check against an
 encrypted dataset, verifying the raw key, recovery phrase, and Shamir
 shares each independently decrypt correctly — see Encryption below.
 
@@ -152,13 +150,28 @@ unreadable:
   3-of-5). Any `k` of the `n` shares reconstruct the key; fewer than `k`
   reveal nothing about it.
 
-Recovery isn't a separate "disaster" code path — every `read-range` call
-supplies key material in one of three equivalent forms (`--key`,
-`--phrase`, or `--shares`), and the manager resolves whichever was given
-down to the raw key before asking the engine to decrypt. A wrong key, a
-mistyped phrase, and an insufficient set of shares are all caught the same
-way: the engine's AES-GCM authentication tag fails and the read is
-rejected.
+Recovery isn't a separate "disaster" code path — every `read-range` and
+`mount` call supplies key material in one of three equivalent forms
+(`--key`, `--phrase`, or `--shares`), and the manager resolves whichever
+was given down to the raw key. A wrong key and an insufficient set of
+shares are caught the same way: the AES-GCM authentication tag fails and
+the request is rejected. (A mistyped phrase is usually caught even
+earlier, by the phrase's own checksum.)
+
+Encrypted datasets are never mounted automatically. Mounting one decrypts
+the archive into `ABYSSAL_DECRYPT_ROOT` — RAM-backed tmpfs by default
+(`/dev/shm/abyssal`, mode `0700`/`0600`), so plaintext never touches
+persistent storage — for as long as it stays mounted. The key therefore
+gates *mounting*: while mounted, anything allowed into the mountpoint can
+read it. API reads still require the key on every call, checked against
+the key it was mounted with. `unmount`, or stopping the manager, wipes the
+decrypted copy; a crashed manager's leftovers are cleaned up on its next
+start.
+
+Known limitation: the whole archive is one AES-GCM message, so mounting
+an encrypted dataset briefly needs about twice its size in RAM (OTP's
+`:crypto` has no streaming AEAD) on top of the tmpfs copy. A chunked
+format is the fix if datasets outgrow that.
 
 ```sh
 ./abyssal publish --name mydata --version v1 --source ./data \
@@ -166,6 +179,9 @@ rejected.
 
 ./abyssal read-range --name mydata --version v1 --entry file.txt \
   --offset 0 --length 100 --key <hex from publish>
+
+./abyssal mount --name mydata --version v1 --phrase "24 words..."
+./abyssal unmount --name mydata --version v1
 
 ./abyssal recover-key --shares <share1> --shares <share2> --shares <share3>
 ```
@@ -178,7 +194,7 @@ AES-256-GCM remains secure against quantum computers (Grover's algorithm reduces
 
 ## ML-KEM key wrapping
 
-When a key must leave the engine — shared with a collaborator, backed up to a remote vault, or stored in a manifest — wrap it under ML-KEM-768 instead of exposing the raw AES key.
+When a key must leave the manager — shared with a collaborator, backed up to a remote vault, or stored in a manifest — wrap it under ML-KEM-768 instead of exposing the raw AES key.
 
 ```sh
 ./abyssal publish --name mydata --version v1 --source ./data \
@@ -225,7 +241,7 @@ PQC-aware recovery extends the existing BIP39 mnemonic to encode both the AES ke
 
 | Phase | Action |
 |-------|--------|
-| Now | Audit where AES keys are transmitted or stored outside the engine |
+| Now | Audit where AES keys are transmitted or stored outside the manager |
 | Next | Add `--kem-wrap` and `--hybrid-kem` options |
 | Later | Add `--sign` / `--verify` for manifest provenance |
 | Post-2030 | Make PQC wrapping the default |
@@ -310,13 +326,16 @@ Abyssal supports two ways of accessing datasets.
 
 ## Mounted mode
 
-Datasets are mounted via **FUSE + DwarFS**.
-
-Applications can use normal filesystem operations:
+Datasets are mounted via **FUSE + DwarFS**, one mount per published
+version:
 
 ```
-/mnt/abyssal/mydataset/
+/mnt/abyssal/<name>/<version>/
 ```
+
+Applications can use normal filesystem operations. Plaintext datasets are
+mounted when published and again whenever the manager starts; encrypted
+ones only via `mount` with key material (see Encryption).
 
 Best for:
 
@@ -324,9 +343,12 @@ Best for:
 - scripts
 - compatibility
 
-## On-demand mode (planned)
+## On-demand mode
 
-Datasets are accessed via API (gRPC / HTTP range reads). The client retrieves only the required portions of the dataset.
+Datasets are accessed via API (gRPC `ReadRange` today; HTTP range reads
+planned). The client retrieves only the required portions of the dataset.
+Reads are served straight from the dataset's mount with `pread`, so they
+share the DwarFS block cache with mounted-mode readers.
 
 Advantages:
 
@@ -371,17 +393,17 @@ Recommended operational practices include:
 
 Abyssal is currently in **early experimental development**.
 
-Working today: publish a directory as a dataset (via `mkdwarfs`) and read a
-byte range back out of it, end to end through the Elixir manager and Rust
-engine, over gRPC — see Getting Started above. Optional per-dataset
-encryption (AES-256-GCM) with recovery via a BIP39-style phrase and/or
-Shamir's Secret Sharing — see Encryption above. Compression profiles
-(Hot/Balanced/Archive) can be selected explicitly per publish, or left to
-the dynamic pool-capacity-based policy — see Compression Profiles and
-Dynamic Compression Behavior above.
+Working today: publish a directory as a dataset (via `mkdwarfs`), mount
+it via the DwarFS FUSE driver, and read byte ranges back out of it over
+gRPC — see Getting Started above. Optional per-dataset encryption
+(AES-256-GCM) with recovery via a BIP39-style phrase and/or Shamir's Secret
+Sharing — see Encryption above. Compression profiles (Hot/Balanced/Archive)
+can be selected explicitly per publish, or left to the dynamic
+pool-capacity-based policy — see Compression Profiles and Dynamic
+Compression Behavior above.
 
 Not yet built: real ZFS pool integration (the release store is a plain
-directory for now), the FUSE mounted-mode access path, retention/replication.
+directory for now), HTTP range reads, retention/replication.
 
 Current focus areas:
 
