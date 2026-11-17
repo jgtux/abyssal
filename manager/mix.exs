@@ -42,8 +42,7 @@ defmodule Abyssal.MixProject do
       # produced a doubled lib/abyssal/v1/abyssal/v1/manager.pb.ex.
       "protobuf.generate": [
         "cmd protoc --elixir_out=plugins=grpc:./lib --proto_path=priv/protos priv/protos/zfs_monitor.proto",
-        "cmd protoc --elixir_out=plugins=grpc:./lib --proto_path=../proto/abyssal/v1 ../proto/abyssal/v1/manager.proto",
-        "cmd protoc --elixir_out=plugins=grpc:./lib --proto_path=../proto/abyssal/engine/v1 ../proto/abyssal/engine/v1/engine.proto"
+        "cmd protoc --elixir_out=plugins=grpc:./lib --proto_path=../proto/abyssal/v1 ../proto/abyssal/v1/manager.proto"
       ]
     ]
   end

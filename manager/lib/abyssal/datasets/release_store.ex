@@ -15,9 +15,10 @@ defmodule Abyssal.Datasets.ReleaseStore do
 
   @default_root "data/releases"
 
-  # Always absolute: archive_path/2 is sent as-is to the engine, a
-  # separate OS process with its own working directory, so a relative
-  # root would resolve against the wrong directory there.
+  # Always absolute: archive_path/2 is handed as-is to the dwarfs FUSE
+  # driver (a separate, daemonized OS process with its own working
+  # directory) and recorded in manifests, so a relative root would resolve
+  # against the wrong directory there.
   def root do
     Application.get_env(:abyssal, :release_root, @default_root)
     |> Path.expand()
@@ -29,7 +30,7 @@ defmodule Abyssal.Datasets.ReleaseStore do
   OS resolves the path (empty, ".." anywhere, or a path separator) --
   `Path.join`/`Path.expand` do NOT collapse ".." themselves, but every
   actual filesystem call downstream (File.mkdir_p!, File.write!, the
-  archive_path handed to the Rust engine) resolves it via the kernel,
+  archive_path handed to the dwarfs driver) resolves it via the kernel,
   so an unvalidated name/version is a real path-traversal primitive, not
   just a theoretical one. `name`/`version` reach here straight from the
   gRPC request with no other validation, so this is the enforcement

@@ -1,3 +1,0 @@
-[submodule "engine/vendor/libdwarfs-wr"]
-	path = engine/vendor/libdwarfs-wr
-	url = https://github.com/tamatebako/libdwarfs.git

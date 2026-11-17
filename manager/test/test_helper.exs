@@ -1,1 +1,1 @@
-ExUnit.start(exclude: [:requires_mkdwarfs, :requires_engine, :requires_fuse])
+ExUnit.start(exclude: [:requires_mkdwarfs, :requires_fuse])

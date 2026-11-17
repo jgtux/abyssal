@@ -34,8 +34,8 @@ defmodule Abyssal.Datasets.Manifest do
           # "aes-256-gcm" when encrypted, else nil.
           cipher: String.t() | nil,
           # Hex-encoded 12-byte AES-GCM nonce, for operator visibility only --
-          # the engine always reads the real nonce back out of the archive
-          # file itself (see engine/src/crypto.rs), never from here. The key
+          # decryption always reads the real nonce back out of the archive
+          # file itself (see Abyssal.Crypto.AesGcm.unwrap/1), never from here. The key
           # itself is never a manifest field: no persistent keystore.
           nonce: String.t() | nil,
           # "hot" | "balanced" | "archive" -- which mkdwarfs -l level built
