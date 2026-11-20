@@ -49,6 +49,13 @@ jobs:
         working-directory: manager
         run: mix deps.get
 
+      # Fails if mix.lock pins a package its maintainers retired (often for
+      # security). Built into Hex, so no new dependency and mix.lock is
+      # untouched. CVEs in mix.lock are covered by sbom.yml's grype scan.
+      - name: Hex audit (retired packages)
+        working-directory: manager
+        run: mix hex.audit
+
       - name: Elixir format check
         working-directory: manager
         run: mix format --check-formatted
