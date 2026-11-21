@@ -1,0 +1,48 @@
+# SBOM + CVE scan, separate from the test workflow so it can run on a
+# schedule without re-running the whole test suite.
+#
+# The weekly run is the point: new CVEs are published against dependencies
+# nobody touched, so last month's green build says nothing about today. grype
+# scans the SBOM, not the source, so this job needs no toolchain.
+
+name: sbom
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  release:
+    types: [published]
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sbom:
+    runs-on: ubuntu-latest
+    permissions:
+      # write is only used on release events, to attach the SBOM as an asset.
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      # syft reads the lockfiles (go.sum, mix.lock, package-lock.json, ...).
+      # It uploads the SBOM as a workflow artifact, and as a release asset on
+      # releases.
+      - uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          artifact-name: sbom.cdx.json
+
+      # Fails on high or critical; lower severities show as warnings only.
+      - uses: anchore/scan-action@v7
+        with:
+          sbom: sbom.cdx.json
+          severity-cutoff: high
+          fail-build: true
+          output-format: table

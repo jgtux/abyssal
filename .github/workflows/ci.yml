@@ -49,6 +49,15 @@ jobs:
         working-directory: manager
         run: mix deps.get
 
+      # Fails if mix.lock pins a retired package or one with a security
+      # advisory. Built into Hex, so no new dependency and mix.lock is
+      # untouched. Keep it even with sbom.yml: on the first run grype passed
+      # the SBOM while this step caught HIGH advisories in grpc, protobuf
+      # and cowlib.
+      - name: Hex audit (retired packages and advisories)
+        working-directory: manager
+        run: mix hex.audit
+
       - name: Elixir format check
         working-directory: manager
         run: mix format --check-formatted
